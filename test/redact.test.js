@@ -28,6 +28,11 @@ test('header match ignores case and leading spaces', () => {
   assert.equal(redactLog('  set-cookie:   token=abc'), '  set-cookie:   <redacted>');
 });
 
+test('Cookie2 and Set-Cookie2 header values are replaced too', () => {
+  assert.equal(redactLog('Cookie2: webvpn=AAAA'), 'Cookie2: <redacted>');
+  assert.equal(redactLog('Set-Cookie2: token=abc; Secure'), 'Set-Cookie2: <redacted>');
+});
+
 test('webvpn tokens inside other text are replaced', () => {
   const out = redactLog('Sent cookie webvpn=SECRET1 and webvpnc=SECRET2; then webvpncontext=SECRET3');
   assert.equal(out, 'Sent cookie webvpn=<redacted> and webvpnc=<redacted>; then webvpncontext=<redacted>');
