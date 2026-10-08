@@ -1,26 +1,118 @@
 #!/usr/bin/expect -f
 
+# Credentials (sudo password, VPN username, VPN password) arrive on stdin as
+# three percent-encoded lines, followed by a fourth line holding a one-time
+# hex nonce -- never as argv, where `ps` would show credentials for the whole
+# VPN session (issue #4). argv carries only the openconnect path and its
+# flags. main.js writes one encodeURIComponent'd value per line, then closes
+# stdin, before any prompt exists to answer.
+#
+# The nonce becomes part of sudo's -p prompt below (issue #36): only that
+# exact prompt is ever answered with the macOS password. A hostile VPN server
+# asking "Password:" first -- before the username -- can then only ever be
+# answered with the VPN password, the credential it was meant to receive. It
+# cannot forge the nonce'd prompt: the nonce never leaves this machine except
+# into sudo's own argv, and it is drawn fresh per attempt.
+
+# Pin the encoding instead of trusting the inherited locale: the JS side sends
+# UTF-8 and we must send the same bytes back out through the pty, whatever
+# LANG the GUI happened to pass down.
+encoding system utf-8
+
 set timeout 30
 set openconnect_path [lindex $argv 0]
-set sudo_password [lindex $argv 1]
-set username [lindex $argv 2]
-set vpn_password [lindex $argv 3]
-set args [lrange $argv 4 end]
+set args [lrange $argv 1 end]
+
+# ---8<--- pdecode: extracted verbatim by test/vpn-connect.test.sh
+# Undo encodeURIComponent(): each %XX becomes one byte, and the whole byte run
+# is re-read as UTF-8 at the end so a multi-byte character split across
+# several %XX groups (any non-ASCII input) comes back as one character
+# instead of mojibake. Pure Tcl: `binary format` and `encoding convertfrom`
+# are old enough for the Tcl 8.4 that macOS /usr/bin/expect may embed;
+# `binary encode` is 8.6-only and would abort there.
+proc pdecode {s} {
+    set bytes {}
+    set pos 0
+    set n [string length $s]
+    while {$pos < $n} {
+        set hex [string range $s [expr {$pos + 1}] [expr {$pos + 2}]]
+        if {[string index $s $pos] eq "%" && [regexp {^[0-9A-Fa-f]{2}$} $hex]} {
+            scan $hex %x byte
+            incr pos 3
+        } else {
+            # Literal character. encodeURIComponent leaves only unreserved
+            # ASCII raw, so this passes through byte-for-byte.
+            scan [string index $s $pos] %c byte
+            incr pos
+        }
+        lappend bytes $byte
+    }
+    return [encoding convertfrom utf-8 [binary format c* $bytes]]
+}
+# ---8<--- end pdecode
+
+# Read all four lines BEFORE anything is spawned: up to this point no
+# credential has been placed where another process could see it.
+set cred {}
+for {set i 0} {$i < 4} {incr i} {
+    if {[gets stdin line] < 0} {
+        puts "\[EXPECT ERROR\] stdin line [expr {$i + 1}] missing (wanted 3 credentials + nonce)"
+        exit 1
+    }
+    # A bare CR can only be line-ending noise from the transport: a real CR
+    # in the secret arrives as %0D, never as a literal.
+    lappend cred [pdecode [string trimright $line "\r"]]
+}
+set sudo_password [lindex $cred 0]
+set username      [lindex $cred 1]
+set vpn_password  [lindex $cred 2]
+set sudo_nonce    [lindex $cred 3]
+
+# Drop any cached sudo timestamp before connecting (issue #36): sudo then has
+# to prompt, so its nonce'd prompt is the first thing we are asked for.
+# Best-effort -- if sudo itself is broken, the spawn below fails with its own
+# message. This is the position guarantee; the nonce'd -p prompt below is the
+# stronger content guarantee, and the macOS password is bound to that one:
+# even if the ordering broke (cached timestamp, NOPASSWD), a VPN server
+# prompt still can never be answered with it.
+catch {exec sudo -k}
 
 log_user 1
 
 # Start sudo openconnect. {*} passes each list element as one argument, as is.
 # Never wrap this in eval: that re-parses the values as Tcl, so a space in a
 # form field adds openconnect options (run as root) and brackets run commands.
+# -p stamps the one-time nonce into sudo's prompt so its password request is
+# recognizable by content, not just by arrival order (issue #36).
 puts "\[EXPECT\] Starting sudo openconnect..."
-spawn sudo -S $openconnect_path {*}$args
+set sudo_prompt "sudo-prompt-$sudo_nonce:"
+spawn sudo -S -p $sudo_prompt $openconnect_path {*}$args
 
-# Send sudo password
+# Authentication phase. The macOS password goes ONLY to the exact nonce'd
+# sudo prompt (-ex: literal match, no glob surprises). Any other password
+# prompt seen in this phase belongs to the VPN conversation -- a server that
+# asks Password: before Username: is answered with the VPN password, never
+# the local one (issue #36). It cannot forge the nonce'd prompt because it
+# never gets to see the nonce.
 puts "\[EXPECT\] Waiting for sudo password prompt..."
+# sudo re-issues the same -p prompt only when the password was wrong
+# ("Sorry, try again" is locale-dependent and may never appear), so a second
+# nonce'd prompt is itself the reliable wrong-password signal.
+set sudo_prompts_seen 0
 expect {
-    "Password:" {
+    -ex $sudo_prompt {
+        incr sudo_prompts_seen
+        if {$sudo_prompts_seen > 1} {
+            puts "\[EXPECT ERROR\] Incorrect sudo password!"
+            exit 1
+        }
         puts "\[EXPECT\] Sudo password prompt detected, sending password..."
         send -- "$sudo_password\r"
+        exp_continue
+    }
+    -re "(Password:|Please enter your password)" {
+        puts "\[EXPECT\] VPN password prompt detected, sending VPN password..."
+        send -- "$vpn_password\r"
         exp_continue
     }
     "Sorry, try again" {

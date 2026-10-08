@@ -7,15 +7,18 @@ import { ShieldAlert } from 'lucide-react';
 
 function PasswordPrompt() {
   const [password, setPassword] = useState('');
-  const { ipcRenderer } = window.require('electron');
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    ipcRenderer.send('sudo-password-entered', password);
+    // Bridge from password-preload.js (contextIsolation:true) — sends
+    // 'sudo-password-entered'; main.js resolves the pending prompt with it.
+    window.ocPassword?.submit(password);
   };
 
   const handleCancel = () => {
-    ipcRenderer.send('sudo-password-entered', null);
+    // Used to send ('sudo-password-entered', null); cancel now travels on its
+    // own 'sudo-password-cancelled' channel and main resolves with null.
+    window.ocPassword?.cancel();
   };
 
   const handleKeyPress = (e) => {

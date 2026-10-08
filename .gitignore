@@ -4,7 +4,8 @@ node_modules/
 # Build outputs
 dist/
 out/
-build/
+build/*
+!build/icon.icns
 
 # Electron build artifacts
 *.dmg
@@ -40,3 +41,6 @@ yarn-error.log*
 .env.local
 
 archive/
+
+# Local working area (job artifacts, scratch files)
+tmp/

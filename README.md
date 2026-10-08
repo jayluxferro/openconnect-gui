@@ -110,9 +110,9 @@ sudo pkill -9 openconnect   # all of them
 
 ## Security and your data
 
-Saved profiles, passwords included, are plaintext in `profiles.json` in the app's folder under `~/Library/Application Support/`. Leave the password empty before saving to keep it out of the file. Your macOS password is asked for each time and never written to disk. The app looks up your public IP address from api.ipify.org when it starts and whenever the connection status changes.
+Saved profile passwords are encrypted at rest with the macOS Keychain (`safeStorage`); only when the Keychain is unavailable does a password fall back to plaintext in `profiles.json` (the app's folder under `~/Library/Application Support/`), and it warns in the Logs tab when that happens. VPN credentials are handed to the connection helper over a pipe, never on the command line, so they cannot appear in `ps` output or the Processes tab. Your macOS password is asked for each time, never written to disk, and only ever sent to a sudo prompt made recognizable by a per-connection random marker — a log line containing `sudo-prompt-<random>:` is that marker being echoed, not a secret. The app looks up your public IP address from api.ipify.org when it starts and whenever the connection status changes.
 
-The app has open security issues, including one that shows your passwords in the Processes tab of the installed app ([#4](https://github.com/jadedm/openconnect-gui/issues/4)). [SECURITY.md](SECURITY.md) lists them, explains how credentials are handled, and says how to report a new one privately.
+[SECURITY.md](SECURITY.md) explains how credentials are handled and how to report a new issue privately.
 
 ## Limitations
 
