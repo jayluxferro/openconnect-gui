@@ -40,3 +40,6 @@ yarn-error.log*
 .env.local
 
 archive/
+
+# Local working area (job artifacts, scratch files)
+tmp/
