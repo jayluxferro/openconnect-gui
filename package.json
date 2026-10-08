@@ -12,7 +12,7 @@
     "start": "npm run electron:dev",
     "package": "npm run build && electron-builder",
     "test:expect": "bash test/vpn-connect.test.sh",
-    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js test/main-connect-wiring.test.js test/tray-icon.test.js test/profiles-storage.test.js test/ip-refresh.test.js",
+    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js test/main-connect-wiring.test.js test/tray-icon.test.js test/profiles-storage.test.js test/ip-refresh.test.js test/auto-update.test.js",
     "test": "npm run test:unit && npm run test:expect"
   },
   "keywords": [
@@ -30,6 +30,7 @@
     "@radix-ui/react-slot": "^1.0.2",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -82,9 +83,15 @@
       "category": "public.app-category.utilities",
       "target": [
         "dmg",
-        "pkg"
+        "pkg",
+        "zip"
       ],
       "icon": "build/icon.icns"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "jayluxferro",
+      "repo": "openconnect-gui"
     }
   }
 }
