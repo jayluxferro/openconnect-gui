@@ -1,6 +1,6 @@
 {
   "name": "openconnect-gui",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenConnect VPN GUI application for macOS",
   "main": "main.js",
   "scripts": {
