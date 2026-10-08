@@ -14,6 +14,13 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [alert, setAlert] = useState({ show: false, message: '', type: 'info' });
   const [openConnectInstalled, setOpenConnectInstalled] = useState(true);
+  // #33: show the real packaged version, not a hard-coded string
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => {
+    if (window.ocApp?.version) {
+      window.ocApp.version().then(setAppVersion).catch(() => {});
+    }
+  }, []);
   const [ipAddress, setIpAddress] = useState({ current: null, loading: false });
   const [currentServerUrl, setCurrentServerUrl] = useState('');
   const [currentView, setCurrentView] = useState('connection');
@@ -212,7 +219,7 @@ function App() {
       {/* Footer */}
       <footer className="flex-shrink-0 px-6 py-2 border-t bg-muted/30">
         <div className="flex justify-end">
-          <span className="text-xs text-muted-foreground">v1.0.0</span>
+          <span className="text-xs text-muted-foreground">{appVersion ? `v${appVersion}` : ''}</span>
         </div>
       </footer>
     </div>

@@ -9,7 +9,10 @@ function Installer() {
   const [installBtnText, setInstallBtnText] = useState('Install OpenConnect Automatically');
   const [installBtnDisabled, setInstallBtnDisabled] = useState(false);
 
-  const { ipcRenderer } = window.require('electron');
+  // Renderer side of installer-preload.js (contextIsolation:true): install()
+  // invokes 'install-openconnect', check() invokes 'check-openconnect',
+  // openTerminal() sends 'open-terminal', installed() sends
+  // 'openconnect-installed' (main closes this window and refreshes).
 
   const copyCode = (text, button) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -27,7 +30,7 @@ function Installer() {
     setStatus({ show: true, message: 'Installing OpenConnect via Homebrew. This may take a few minutes...', type: 'info' });
 
     try {
-      const result = await ipcRenderer.invoke('install-openconnect');
+      const result = await window.ocInstaller?.install();
 
       if (result.success) {
         setStatus({
@@ -37,7 +40,7 @@ function Installer() {
         });
         setInstallBtnText('Installed Successfully');
         setTimeout(() => {
-          ipcRenderer.send('openconnect-installed');
+          window.ocInstaller?.installed();
         }, 2000);
       } else {
         setStatus({
@@ -60,13 +63,13 @@ function Installer() {
   };
 
   const openTerminal = () => {
-    ipcRenderer.send('open-terminal');
+    window.ocInstaller?.openTerminal();
   };
 
   const checkAgain = async () => {
     setStatus({ show: true, message: 'Checking for OpenConnect...', type: 'info' });
 
-    const result = await ipcRenderer.invoke('check-openconnect');
+    const result = await window.ocInstaller?.check();
 
     if (result.installed) {
       setStatus({
@@ -75,7 +78,7 @@ function Installer() {
         type: 'success'
       });
       setTimeout(() => {
-        ipcRenderer.send('openconnect-installed');
+        window.ocInstaller?.installed();
       }, 1500);
     } else {
       setStatus({

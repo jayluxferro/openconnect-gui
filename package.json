@@ -13,7 +13,7 @@
     "start": "npm run electron:dev",
     "package": "npm run build && electron-builder",
     "test:expect": "bash test/vpn-connect.test.sh",
-    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js",
+    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js test/main-connect-wiring.test.js",
     "test": "npm run test:unit && npm run test:expect"
   },
   "keywords": [
@@ -54,6 +54,9 @@
     "files": [
       "main.js",
       "preload.js",
+      "splash-preload.js",
+      "password-preload.js",
+      "installer-preload.js",
       "lib/**/*",
       "dist/pages/**/*",
       "dist/assets/**/*",

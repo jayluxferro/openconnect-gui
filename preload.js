@@ -34,3 +34,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('connection-error', (event, error) => callback(error));
   }
 });
+
+// #33: the app module only exists in the main process, so the version is
+// fetched over IPC instead of a constant hard-coded in the renderer
+contextBridge.exposeInMainWorld('ocApp', {
+  version: () => ipcRenderer.invoke('app-version')
+});

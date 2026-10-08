@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, shell, safeStorage } = require('electron');
 const { spawn, exec } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { redactLog } = require('./lib/redact');
@@ -11,6 +12,12 @@ let installerWindow;
 let tray;
 let openconnectProcess = null;
 let connectionStatus = 'disconnected';
+// Set while the user (or app quit) is intentionally tearing the tunnel down,
+// so the child's 130/143 exit code is not surfaced as an error (#38).
+let userDisconnectRequested = false;
+// Sent once per session if profiles must stay plaintext because the OS
+// keychain is unavailable (#6).
+let plaintextPasswordWarningSent = false;
 const PROFILES_FILE = path.join(app.getPath('userData'), 'profiles.json');
 let systemChecksComplete = false;
 
@@ -22,10 +29,12 @@ function createSplashWindow() {
     frame: false,
     resizable: false,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      preload: path.join(__dirname, 'splash-preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
     }
   });
+  denyNavigation(splashWindow);
 
   // Load the splash screen - in dev mode, load from vite server; in production, load from dist
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -45,139 +54,82 @@ function createSplashWindow() {
 }
 
 // Perform system checks
+// The splash window is contextIsolated now, so it no longer runs or watches
+// these checks itself - main runs them and ships the whole result set on one
+// channel, and the splash just renders whatever arrives on 'splash:checks'.
 async function performSystemChecks() {
-  let progress = 0;
-  const totalChecks = 6;
-  const updateProgress = () => {
-    progress++;
-    const percent = Math.round((progress / totalChecks) * 100);
-    if (splashWindow) {
-      splashWindow.webContents.send('splash-progress', percent);
-    }
-  };
+  const results = [];
 
   try {
     // Check 1: Electron runtime
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'Application Runtime');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-complete', 'Application Runtime', true, `Electron v${process.versions.electron}`);
-    }
-    updateProgress();
+    results.push({
+      check: 'Application Runtime',
+      ok: true,
+      detail: `Electron v${process.versions.electron}`
+    });
 
     // Check 2: File system access
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'File System Access');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
     try {
       const userDataPath = app.getPath('userData');
       if (!fs.existsSync(userDataPath)) {
         fs.mkdirSync(userDataPath, { recursive: true });
       }
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'File System Access', true, 'OK');
-      }
+      results.push({ check: 'File System Access', ok: true, detail: 'OK' });
     } catch (error) {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'File System Access', false, error.message);
-      }
+      results.push({ check: 'File System Access', ok: false, detail: error.message });
     }
-    updateProgress();
 
     // Check 3: OpenConnect installation
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'OpenConnect Binary');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
     const openconnectCheck = await checkOpenConnect();
-    if (openconnectCheck.installed) {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'OpenConnect Binary', true, openconnectCheck.path || 'Found');
-      }
-    } else {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'OpenConnect Binary', false, 'Not installed');
-        splashWindow.webContents.send('splash-error', {
-          message: 'OpenConnect is not installed. Install with: brew install openconnect',
-          action: 'install-openconnect'
-        });
-      }
-      // Don't continue if OpenConnect is not found
-      updateProgress();
-      updateProgress();
-      updateProgress();
-      updateProgress();
-      return false;
-    }
-    updateProgress();
+    results.push({
+      check: 'OpenConnect Binary',
+      ok: openconnectCheck.installed,
+      detail: openconnectCheck.installed
+        ? (openconnectCheck.path || 'Found')
+        : 'Not installed. Install with: brew install openconnect'
+    });
 
     // Check 4: Expect binary
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'Expect Binary');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
     const expectCheck = await checkExpect();
-    if (expectCheck.installed) {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'Expect Binary', true, expectCheck.path || 'Found');
-      }
-    } else {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'Expect Binary', false, 'Not installed');
-        splashWindow.webContents.send('splash-error', {
-          message: 'Expect is not installed. It should be pre-installed on macOS. Try: brew install expect',
-          action: null
-        });
-      }
-      updateProgress();
-      updateProgress();
-      return false;
-    }
-    updateProgress();
+    results.push({
+      check: 'Expect Binary',
+      ok: expectCheck.installed,
+      detail: expectCheck.installed
+        ? (expectCheck.path || 'Found')
+        : 'Not installed. It should be pre-installed on macOS. Try: brew install expect'
+    });
 
     // Check 5: Network capabilities
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'Network Capabilities');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-complete', 'Network Capabilities', true, 'Available');
-    }
-    updateProgress();
+    results.push({ check: 'Network Capabilities', ok: true, detail: 'Available' });
 
-    // Check 6: Sudo privileges
-    if (splashWindow) {
-      splashWindow.webContents.send('system-check-start', 'Sudo Privileges');
-    }
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // Check 6: Sudo privileges - missing sudo is not fatal, connecting will
+    // just prompt for the password later
     const sudoCheck = await checkSudoAccess();
-    if (sudoCheck.available) {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-complete', 'Sudo Privileges', true, 'User has sudo access');
-      }
-    } else {
-      if (splashWindow) {
-        splashWindow.webContents.send('system-check-warning', 'Sudo Privileges', 'Sudo required - will prompt when connecting');
-      }
-    }
-    updateProgress();
+    results.push({
+      check: 'Sudo Privileges',
+      ok: true,
+      detail: sudoCheck.available ? 'User has sudo access' : 'Sudo required - will prompt when connecting'
+    });
 
-    // All checks passed
-    if (splashWindow) {
-      splashWindow.webContents.send('splash-complete');
+    // OpenConnect and expect are the two checks the app cannot run without
+    systemChecksComplete = openconnectCheck.installed && expectCheck.installed;
+
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.webContents.send('splash:checks', results);
     }
-    systemChecksComplete = true;
-    return true;
+    return systemChecksComplete;
 
   } catch (error) {
     console.error('System check error:', error);
-    if (splashWindow) {
-      splashWindow.webContents.send('splash-error', {
-        message: `System check failed: ${error.message}`
-      });
+    // A partial batch with no failed rows would animate to 100% in the splash
+    // and read as success — always mark the batch failed when checks aborted.
+    results.push({
+      check: 'System Checks',
+      ok: false,
+      detail: `Checks aborted: ${error.message}`
+    });
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.webContents.send('splash:checks', results);
     }
     return false;
   }
@@ -197,6 +149,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 10, y: 10 }
   });
+  denyNavigation(mainWindow);
 
   // Load the app - in dev mode, load from vite server; in production, load from dist
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -231,8 +184,9 @@ function createInstallerWindow() {
     width: 700,
     height: 650,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      preload: path.join(__dirname, 'installer-preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
     },
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 10, y: 10 },
@@ -240,6 +194,7 @@ function createInstallerWindow() {
     maximizable: false,
     alwaysOnTop: true
   });
+  denyNavigation(installerWindow);
 
   // Load the installer helper - in dev mode, load from vite server; in production, load from dist
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -371,7 +326,14 @@ function getVpncScriptPath() {
 
 // Create system tray
 function createTray() {
-  tray = new Tray(path.join(__dirname, 'assets', 'tray-icon.png'));
+  // A missing icon (dev checkout, odd packaging) must not take the app down
+  try {
+    tray = new Tray(path.join(__dirname, 'assets', 'tray-icon.png'));
+  } catch (error) {
+    tray = null;
+    sendLog(`[WARN] Tray icon unavailable: ${error.message}`, 'warn');
+    return;
+  }
 
   updateTrayMenu();
 
@@ -432,6 +394,7 @@ ipcMain.handle('connect-vpn', async (event, config) => {
 
   try {
     updateStatus('connecting');
+    userDisconnectRequested = false;
 
     // Get OpenConnect binary path
     const openconnectPath = await getOpenConnectPath();
@@ -495,23 +458,45 @@ ipcMain.handle('connect-vpn', async (event, config) => {
       ? path.join(__dirname, 'vpn-connect.exp')
       : path.join(process.resourcesPath, 'vpn-connect.exp');
 
+    // #4: argv carries only the script, the binary and openconnect flags -
+    // never credentials. Anything on argv is readable by any local user via
+    // `ps`; the credentials go to the script's stdin instead, one
+    // percent-encoded line each (see below).
     const expectArgs = [
       expectScriptPath,
       openconnectPath,
-      sudoPassword,
-      config.username.trim(),
-      config.password.trim(),
       ...args
     ];
 
     sendLog('[DEBUG] Using expect script for interactive authentication', 'info');
     sendLog(`[DEBUG] Expect script path: ${expectScriptPath}`, 'info');
 
+    // Validate and encode everything the stdin handshake will need BEFORE
+    // spawning: a value that throws mid-handshake (lone surrogates make
+    // encodeURIComponent throw) would strand the already-spawned child
+    // blocked in `gets`, with openconnectProcess still set and every later
+    // connect refused until restart.
+    if (typeof config.username !== 'string' || typeof config.password !== 'string') {
+      updateStatus('disconnected');
+      return { success: false, error: 'Username and password are required' };
+    }
+    const encodedCredentials = [
+      sudoPassword,
+      config.username.trim(),
+      config.password.trim()
+    ].map((value) => encodeURIComponent(value));
+    const sudoPromptNonce = crypto.randomBytes(16).toString('hex');
+
     const sudoProcess = spawn('expect', expectArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
     openconnectProcess = sudoProcess;
+
+    // EPIPE here (child died before consuming the handshake) needs no
+    // handling: the close handler below owns failure reporting. Registered
+    // so the stream can never emit an unhandled 'error'.
+    sudoProcess.stdin.on('error', () => {});
 
     // Track connection status
     let connected = false;
@@ -557,6 +542,13 @@ ipcMain.handle('connect-vpn', async (event, config) => {
         sendLog('[ERROR] Connection timeout occurred', 'error');
       }
 
+      // #9: the expect script reports every failure on stderr under this
+      // marker. Catch anything beyond the known messages above so it still
+      // reaches the same error path instead of scrolling by as ordinary log.
+      if (output.includes('[EXPECT ERROR]')) {
+        authError = true;
+      }
+
       if ((output.includes('CONNECTED') || output.includes('Established') || output.includes('Configured as')) && !connected) {
         connected = true;
         updateStatus('connected');
@@ -577,6 +569,17 @@ ipcMain.handle('connect-vpn', async (event, config) => {
       sendLog(`[DEBUG] OpenConnect process exited with code ${code} at ${exitTime}`);
 
       openconnectProcess = null;
+
+      // #38: when the user asked for the disconnect, expect reports the
+      // interrupted child as 130 (SIGINT) or 143 (SIGTERM). That is the
+      // disconnect working, not a failure - report it as a plain one.
+      if (userDisconnectRequested) {
+        userDisconnectRequested = false;
+        sendLog('Disconnected', 'info');
+        updateStatus('disconnected');
+        return;
+      }
+
       updateStatus('disconnected');
 
       if (code !== 0 && code !== null) {
@@ -618,8 +621,38 @@ ipcMain.handle('connect-vpn', async (event, config) => {
       }
     });
 
+    // #4: hand the credentials to the expect script on stdin, one line each,
+    // in this exact order (the script reads them with `gets` before spawning
+    // sudo). Encoding happened before the spawn, so a value can never contain
+    // a newline: one write is always exactly one protocol line. Line 4 is
+    // not a credential: the one-time nonce baked into sudo's -p prompt, so
+    // only sudo's own prompt is ever answered with the macOS password (#36).
+    // A hostile VPN server cannot see the nonce, so its Password: prompts
+    // can only ever be answered with the VPN password. The pipe can break
+    // mid-handshake if the child died instantly; a write would then throw
+    // with the child still registered as the live connection - clean up
+    // instead of wedging the app.
+    try {
+      for (const line of [...encodedCredentials, sudoPromptNonce]) {
+        sudoProcess.stdin.write(line + '\n');
+      }
+      sudoProcess.stdin.end();
+    } catch (error) {
+      sudoProcess.kill();
+      openconnectProcess = null;
+      updateStatus('disconnected');
+      return { success: false, error: error.message };
+    }
+
     return { success: true };
   } catch (error) {
+    // Never leave a half-started child registered: it would wedge every
+    // later connect attempt ("Already connected or connecting") and orphan
+    // the expect process until the app quits.
+    if (openconnectProcess) {
+      try { openconnectProcess.kill(); } catch { /* already gone */ }
+      openconnectProcess = null;
+    }
     updateStatus('disconnected');
     return { success: false, error: error.message };
   }
@@ -633,8 +666,10 @@ ipcMain.handle('disconnect-vpn', async () => {
 function disconnectVPN() {
   if (openconnectProcess) {
     sendLog('Disconnecting...');
+    userDisconnectRequested = true;
 
-    // Close stdin to signal clean shutdown
+    // Stdin is already closed since the credential handshake (#4), so the
+    // signals below are what actually stops the tunnel
     try {
       openconnectProcess.stdin.end();
     } catch (e) {
@@ -664,10 +699,64 @@ ipcMain.handle('get-status', async () => {
   return connectionStatus;
 });
 
+// #33: app is main-process-only in Electron, so the renderer asks for the
+// version over IPC instead of reading it from a hard-coded constant
+ipcMain.handle('app-version', async () => {
+  return app.getVersion();
+});
+
+// #6: profiles holding a VPN password must never hit disk as plaintext when
+// the OS keychain is available. Encrypt on save, decrypt back only in memory.
+function encryptProfileForStorage(profile) {
+  const stored = { ...profile };
+  if (stored.password) {
+    if (safeStorage.isEncryptionAvailable()) {
+      stored.passwordEnc = safeStorage.encryptString(stored.password).toString('base64');
+      delete stored.password;
+    } else if (!plaintextPasswordWarningSent) {
+      plaintextPasswordWarningSent = true;
+      sendLog('[WARNING] Passwords stored unencrypted — Keychain unavailable', 'error');
+    }
+  }
+  return stored;
+}
+
+function decryptLoadedProfile(profile) {
+  const loaded = { ...profile };
+  if (loaded.passwordEnc) {
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        loaded.password = safeStorage.decryptString(Buffer.from(loaded.passwordEnc, 'base64'));
+      } catch (error) {
+        // Wrong keychain entry or corrupt ciphertext - drop it rather than
+        // hand the renderer something useless; the user re-enters the password
+        sendLog(`[WARNING] Could not decrypt stored profile password: ${error.message}`, 'error');
+      }
+    } else if (!plaintextPasswordWarningSent) {
+      // The stored password exists but cannot be unlocked right now; say so
+      // instead of silently showing an empty password field.
+      plaintextPasswordWarningSent = true;
+      sendLog('[WARNING] Stored profile password unavailable — Keychain locked or unavailable; re-enter it when connecting', 'error');
+    }
+    delete loaded.passwordEnc;
+  }
+  return loaded;
+}
+
+// #6: write through a temp file + rename so a crash mid-write can never
+// leave a truncated profiles file behind (or, during the plaintext->
+// ciphertext migration, a half-migrated one).
+function writeProfilesFile(profiles) {
+  const tmpFile = `${PROFILES_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(profiles, null, 2));
+  fs.renameSync(tmpFile, PROFILES_FILE);
+}
+
 // Save profiles
 ipcMain.handle('save-profiles', async (event, profiles) => {
   try {
-    fs.writeFileSync(PROFILES_FILE, JSON.stringify(profiles, null, 2));
+    const storedProfiles = profiles.map(encryptProfileForStorage);
+    writeProfilesFile(storedProfiles);
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -679,7 +768,21 @@ ipcMain.handle('load-profiles', async () => {
   try {
     if (fs.existsSync(PROFILES_FILE)) {
       const data = fs.readFileSync(PROFILES_FILE, 'utf8');
-      return { success: true, profiles: JSON.parse(data) };
+      const profiles = JSON.parse(data).map(decryptLoadedProfile);
+
+      // One-time migration: a file written before #6 still holds plaintext
+      // passwords. Rewrite it through the encryption path immediately.
+      if (profiles.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
+        try {
+          const storedProfiles = profiles.map(encryptProfileForStorage);
+          writeProfilesFile(storedProfiles);
+          sendLog('Migrated stored profiles to encrypted passwords', 'info');
+        } catch (error) {
+          sendLog(`[WARNING] Could not migrate profiles to encrypted storage: ${error.message}`, 'error');
+        }
+      }
+
+      return { success: true, profiles };
     }
     return { success: true, profiles: [] };
   } catch (error) {
@@ -789,24 +892,89 @@ ipcMain.handle('kill-process', async (event, pid, sudoPassword) => {
   });
 });
 
-// Install OpenConnect via the bundled script
-ipcMain.handle('install-openconnect', async () => {
+// Locate the brew binary, checking the usual install roots before falling
+// back to PATH (a GUI app's PATH often misses /opt/homebrew/bin entirely)
+function findBrew() {
   return new Promise((resolve) => {
-    const scriptPath = path.join(__dirname, 'scripts', 'install-openconnect.sh');
+    const locations = [
+      '/opt/homebrew/bin/brew',   // Homebrew (Apple Silicon)
+      '/usr/local/bin/brew',      // Homebrew (Intel Mac)
+    ];
 
-    // Check if running in development or production
-    const actualScriptPath = fs.existsSync(scriptPath)
-      ? scriptPath
-      : path.join(process.resourcesPath, 'scripts', 'install-openconnect.sh');
-
-    if (!fs.existsSync(actualScriptPath)) {
-      resolve({ success: false, error: 'Installation script not found' });
-      return;
+    for (const location of locations) {
+      if (fs.existsSync(location)) {
+        resolve(location);
+        return;
+      }
     }
 
-    // Open Terminal and run the script
-    const command = `osascript -e 'tell application "Terminal" to do script "bash \\"${actualScriptPath}\\"; exit"'`;
+    const checkProcess = spawn('which', ['brew']);
+    checkProcess.on('close', (code) => {
+      resolve(code === 0 ? 'brew' : null);
+    });
+  });
+}
 
+// Install OpenConnect. With Homebrew present this runs `brew install` in-app
+// and streams its output to the Logs tab; without it, fall back to opening
+// Terminal so brew's own installer can prompt for the sudo password it needs.
+ipcMain.handle('install-openconnect', async () => {
+  const brewPath = await findBrew();
+
+  if (brewPath) {
+    return new Promise((resolve) => {
+      sendLog('Installing OpenConnect via Homebrew...', 'info');
+
+      const brewProcess = spawn(brewPath, ['install', 'openconnect'], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      // brew writes progress to both streams; log whole lines only, so the
+      // redaction never sees a secret cut in half
+      const stdoutLog = createLineLogger((text) => sendLog(text));
+      const stderrLog = createLineLogger((text) => sendLog(text));
+
+      brewProcess.stdout.on('data', (data) => {
+        stdoutLog.write(data.toString());
+      });
+
+      brewProcess.stderr.on('data', (data) => {
+        stderrLog.write(data.toString());
+      });
+
+      brewProcess.on('error', (error) => {
+        stdoutLog.flush();
+        stderrLog.flush();
+        resolve({ success: false, error: error.message });
+      });
+
+      brewProcess.on('close', (code) => {
+        stdoutLog.flush();
+        stderrLog.flush();
+        if (code === 0) {
+          sendLog('OpenConnect installed successfully!', 'info');
+          resolve({ success: true });
+        } else {
+          sendLog(`[ERROR] brew install openconnect failed with exit code ${code}`, 'error');
+          resolve({ success: false, error: `brew install openconnect exited with code ${code}` });
+        }
+      });
+    });
+  }
+
+  // #30: in a packaged app __dirname is inside the asar archive, which bash
+  // cannot execute from - always resolve bundled scripts against resourcesPath
+  const baseDir = app.isPackaged ? process.resourcesPath : __dirname;
+  const scriptPath = path.join(baseDir, 'scripts', 'install-brew.sh');
+
+  if (!fs.existsSync(scriptPath)) {
+    return { success: false, error: 'Installation script not found' };
+  }
+
+  // Open Terminal and run the script
+  const command = `osascript -e 'tell application "Terminal" to do script "bash \\"${scriptPath}\\"; exit"'`;
+
+  return new Promise((resolve) => {
     exec(command, (error) => {
       if (error) {
         resolve({ success: false, error: error.message });
@@ -878,9 +1046,11 @@ ipcMain.handle('test-connectivity', async (event, host, port) => {
       return;
     }
 
-    // Validate host format (basic hostname/IP validation)
-    // Allow alphanumeric, dots, hyphens, and colons (for IPv6)
-    const validHostPattern = /^[a-zA-Z0-9\.\-:]+$/;
+    // Validate host format (basic hostname/IP validation). Must not start
+    // with '-': the host is passed as its own argv element, and a leading
+    // dash would let a crafted host pose as an nc option. ':' may still lead
+    // for IPv6 literals (::1).
+    const validHostPattern = /^[a-zA-Z0-9:][a-zA-Z0-9.\-:]*$/;
     if (!validHostPattern.test(host)) {
       resolve({ success: false, error: 'Invalid host format' });
       return;
@@ -1124,6 +1294,15 @@ function sendLog(message, type = 'info') {
   }
 }
 
+// #12, defense in depth: every window loads bundled content only. Nothing
+// legitimate ever navigates away or opens popups, and a renderer that did
+// would re-run its preload (and its full IPC surface) against
+// attacker-controlled origin content.
+function denyNavigation(window) {
+  window.webContents.on('will-navigate', (event) => event.preventDefault());
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
+
 async function promptForSudoPassword() {
   return new Promise((resolve) => {
     // Create a simple dialog to get sudo password
@@ -1139,10 +1318,12 @@ async function promptForSudoPassword() {
       minimizable: false,
       maximizable: false,
       webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false
+        preload: path.join(__dirname, 'password-preload.js'),
+        nodeIntegration: false,
+        contextIsolation: true
       }
     });
+    denyNavigation(promptWindow);
 
     const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -1152,14 +1333,35 @@ async function promptForSudoPassword() {
       promptWindow.loadFile(path.join(__dirname, 'dist', 'pages', 'password-prompt.html'));
     }
 
-    ipcMain.once('sudo-password-entered', (event, password) => {
+    // Answer only events from this prompt's own renderer, and unregister the
+    // handlers when the window goes away, so no handler can outlive its
+    // prompt regardless of how it ended (OK, cancel, or window close).
+    const onPasswordEntered = (event, password) => {
+      if (!promptWindow || promptWindow.isDestroyed() || event.sender !== promptWindow.webContents) {
+        return;
+      }
       sendLog('[DEBUG] Sudo password entered by user', 'info');
       promptWindow.close();
       resolve(password);
-    });
+    };
+
+    const onPasswordCancelled = (event) => {
+      if (!promptWindow || promptWindow.isDestroyed() || event.sender !== promptWindow.webContents) {
+        return;
+      }
+      sendLog('[DEBUG] Sudo password prompt cancelled by user', 'info');
+      promptWindow.close();
+      // Cancel means "no password", exactly like closing the window
+      resolve(null);
+    };
+
+    ipcMain.once('sudo-password-entered', onPasswordEntered);
+    ipcMain.once('sudo-password-cancelled', onPasswordCancelled);
 
     promptWindow.on('closed', () => {
       sendLog('[DEBUG] Sudo password prompt window closed', 'info');
+      ipcMain.removeListener('sudo-password-entered', onPasswordEntered);
+      ipcMain.removeListener('sudo-password-cancelled', onPasswordCancelled);
       // If window was closed without entering password, resolve with null
       resolve(null);
     });
@@ -1202,6 +1404,9 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   app.isQuitting = true;
   if (openconnectProcess) {
+    // Quitting counts as a user-initiated disconnect, so the SIGTERM exit
+    // does not get reported as an error (#38)
+    userDisconnectRequested = true;
     openconnectProcess.kill('SIGTERM');
   }
 });

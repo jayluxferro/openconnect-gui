@@ -14,14 +14,15 @@ Only the latest release gets fixes. There are no backports.
 
 The app runs `openconnect` under `sudo`, so it handles two secrets: your macOS password (for `sudo`) and your VPN password.
 
-- **macOS password.** Asked for on every connect (in a separate window) and every process kill and route delete (in a dialog inside the main window). It is never written to disk. After some failed kills or route deletes the dialog keeps it in memory and shows it filled in the next time it opens.
-- **VPN password.** Typed into the Connection form. If you save a profile with the password filled in, it is written in plaintext to `profiles.json` in the app's folder under `~/Library/Application Support/` (`openconnect-gui` when running from source). Leave the field empty before saving to keep it out of the file.
+- **macOS password.** Asked for on every connect (in a separate window) and every process kill and route delete (in a dialog inside the main window). It is never written to disk, never placed on a command line or in the environment: it reaches the connection helper over a pipe and is sent only to sudo's own password prompt, which carries a per-connection random marker so a VPN server's password prompt can never be mistaken for it. After some failed kills or route deletes the dialog keeps it in memory and shows it filled in the next time it opens.
+- **VPN password.** Typed into the Connection form. A saved profile stores the password encrypted with the macOS Keychain (`safeStorage`); if the Keychain is unavailable the app warns in the Logs tab and falls back to plaintext in `profiles.json` in the app's folder under `~/Library/Application Support/`. Profile files are written to a temp file and renamed into place, so a crash mid-write cannot leave a truncated file.
 - **Public IP lookup.** The app sends a request to api.ipify.org when it starts and whenever the connection status changes, to show your public IP.
 
 ## Protections in place
 
-- The main window runs with context isolation and reaches the main process only through the functions in `preload.js`.
+- Every window (main, splash, installer helper, sudo password prompt) runs with context isolation and Node.js access disabled, and reaches the main process only through the narrow function set its own preload exposes. No window may navigate away from its bundled page or open popups.
 - Connection fields and credentials are never interpreted as code or options on the way to openconnect: each field arrives as one argument, changed only by trimming surrounding spaces and adding `https://` to a bare server name. `npm run test:expect` checks this against hostile values.
+- Credentials reach the connection script over its stdin pipe, percent-encoded — never as command-line arguments or environment variables — so `ps` and the Processes tab cannot show them. A one-time random nonce baked into sudo's password prompt (`sudo -p`) means the macOS password is only ever sent to sudo itself; a VPN server that asks for the password first is answered with the VPN password. `npm run test:expect` covers a password-first server and a forged prompt marker.
 - The Logs tab masks session cookies (cookie and authorization headers, the session cookie names of the seven supported protocols, and passwords inside URLs) in every line that comes from openconnect or the connection script, and openconnect runs without `--verbose`, so HTTP headers are not printed at all. `npm run test:unit` checks the masking.
 - Process IDs must be numeric, and route destinations must be `default` or four dot-separated numbers with an optional prefix length, before they reach `sudo`.
 - Most system commands run through `spawn()` with argument arrays. Four use `exec()` with a shell string: the process list, the routing table, the interface list and the OpenConnect installer launcher. The installer string includes the app's install path; none of them include anything you type.
@@ -30,9 +31,4 @@ The app runs `openconnect` under `sudo`, so it handles two secrets: your macOS p
 
 Each is a public issue labelled [`security`](https://github.com/jadedm/openconnect-gui/issues?q=is%3Aissue+label%3Asecurity).
 
-| Issue | Weakness | Who can exploit it |
-|---|---|---|
-| [#4](https://github.com/jadedm/openconnect-gui/issues/4) | While connected, the macOS password, VPN username and VPN password are passed to the connection script as command-line arguments. `ps` shows them, and the installed app displays them in its own Processes tab. | Anyone with an account on the same Mac, or anyone who sees your screen while the Processes tab is open |
-| [#6](https://github.com/jadedm/openconnect-gui/issues/6) | Saved VPN passwords are plaintext in `profiles.json`. | Anything that can read your home folder |
-| [#12](https://github.com/jadedm/openconnect-gui/issues/12) | The splash, installer and sudo password windows run with Node.js access and without context isolation. | Code that gets into one of those pages |
-| [#36](https://github.com/jadedm/openconnect-gui/issues/36) | If sudo already has a cached login and the VPN server's first prompt is `Password:`, the connection script answers it with your macOS password. | The VPN server, or whoever controls the server address you connect to |
+The weaknesses this fork set out to fix are fixed here: [#4](https://github.com/jadedm/openconnect-gui/issues/4) (credentials on the connection script's command line), [#6](https://github.com/jadedm/openconnect-gui/issues/6) (plaintext saved passwords), [#12](https://github.com/jadedm/openconnect-gui/issues/12) (secondary windows running with Node.js access) and [#36](https://github.com/jadedm/openconnect-gui/issues/36) (the macOS password answered into a password-first VPN server prompt). Anything still labelled `security` upstream that is not in that list remains open.
