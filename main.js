@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, shell, safeStorage, nativeImage } = require('electron');
 const { spawn, exec } = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { redactLog } = require('./lib/redact');
+const { TRAY_ICON_BASE64 } = require('./lib/tray-icon');
 const { createLineLogger } = require('./lib/line-logger');
 
 let mainWindow;
@@ -326,9 +327,10 @@ function getVpncScriptPath() {
 
 // Create system tray
 function createTray() {
-  // A missing icon (dev checkout, odd packaging) must not take the app down
+  // A broken icon must not take the app down; the image is an embedded
+  // buffer, so there is no asset file to lose between clone and package
   try {
-    tray = new Tray(path.join(__dirname, 'assets', 'tray-icon.png'));
+    tray = new Tray(nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_BASE64, 'base64')));
   } catch (error) {
     tray = null;
     sendLog(`[WARN] Tray icon unavailable: ${error.message}`, 'warn');
@@ -707,6 +709,13 @@ ipcMain.handle('app-version', async () => {
 
 // #6: profiles holding a VPN password must never hit disk as plaintext when
 // the OS keychain is available. Encrypt on save, decrypt back only in memory.
+
+// Reported to the renderer so the UI states how passwords are actually stored
+// instead of a hard-coded (and, since #6, false) "stored in plaintext" claim.
+function passwordStorageMode() {
+  return safeStorage.isEncryptionAvailable() ? 'encrypted' : 'unavailable';
+}
+
 function encryptProfileForStorage(profile) {
   const stored = { ...profile };
   if (stored.password) {
@@ -782,9 +791,9 @@ ipcMain.handle('load-profiles', async () => {
         }
       }
 
-      return { success: true, profiles };
+      return { success: true, profiles, passwordStorage: passwordStorageMode() };
     }
-    return { success: true, profiles: [] };
+    return { success: true, profiles: [], passwordStorage: passwordStorageMode() };
   } catch (error) {
     return { success: false, error: error.message };
   }

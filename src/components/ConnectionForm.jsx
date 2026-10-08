@@ -11,6 +11,7 @@ function ConnectionForm({
   setProfiles,
   currentStatus,
   openConnectInstalled,
+  passwordStorage,
   showAlert,
   addLog,
   saveProfiles,
@@ -270,7 +271,12 @@ function ConnectionForm({
               value={formData.password}
               onChange={handleInputChange}
             />
-            <p className="text-xs text-muted-foreground">⚠️ Warning: Password is stored in plaintext locally</p>
+            {passwordStorage === 'encrypted' && (
+              <p className="text-xs text-muted-foreground">Saved profile passwords are encrypted via the macOS Keychain</p>
+            )}
+            {passwordStorage === 'unavailable' && (
+              <p className="text-xs text-muted-foreground">⚠️ Warning: Keychain unavailable — passwords would be stored unencrypted</p>
+            )}
           </div>
 
           <div className="space-y-2">
