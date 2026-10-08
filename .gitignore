@@ -20,9 +20,6 @@ build/*
 # User data
 profiles.json
 
-# Generated assets
-assets/tray-icon.png
-
 # Logs
 npm-debug.log*
 yarn-debug.log*

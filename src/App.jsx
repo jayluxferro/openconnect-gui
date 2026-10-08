@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ConnectionForm from './components/ConnectionForm';
 import LogsPanel from './components/LogsPanel';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
@@ -26,6 +26,7 @@ function App() {
   const [currentView, setCurrentView] = useState('connection');
   const [problematicRoutesCount, setProblematicRoutesCount] = useState(0);
   const [runningProcessesCount, setRunningProcessesCount] = useState(0);
+  const [passwordStorage, setPasswordStorage] = useState(null);
 
   useEffect(() => {
     // Initialize the app
@@ -68,6 +69,7 @@ function App() {
     const result = await window.electronAPI.loadProfiles();
     if (result.success) {
       setProfiles(result.profiles || []);
+      setPasswordStorage(result.passwordStorage || null);
     } else {
       showAlert(`Failed to load profiles: ${result.error}`, 'error');
     }
@@ -109,7 +111,7 @@ function App() {
   const fetchIpAddress = async () => {
     setIpAddress((prev) => ({ ...prev, loading: true }));
     try {
-      const response = await fetch('https://api.ipify.org?format=json', { timeout: 5000 });
+      const response = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) });
       const data = await response.json();
       setIpAddress({ current: data.ip, loading: false });
       addLog(`Current IP: ${data.ip}`, 'info');
@@ -124,12 +126,20 @@ function App() {
     fetchIpAddress();
   }, []);
 
+  // Refetch the IP only on real status TRANSITIONS. Effects with deps also run
+  // on mount, so without this guard "disconnected" on startup logged the IP a
+  // second time right after the mount fetch above.
+  const prevStatusRef = useRef(null);
   useEffect(() => {
-    // Fetch IP when connection status changes to connected or disconnected
-    if (currentStatus === 'connected' || currentStatus === 'disconnected') {
-      setTimeout(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = currentStatus;
+    const connectedNow = currentStatus === 'connected' && prev && prev !== 'connected';
+    const disconnectedNow = currentStatus === 'disconnected' && prev === 'connected';
+    if (connectedNow || disconnectedNow) {
+      const timer = setTimeout(() => {
         fetchIpAddress();
       }, 2000); // Wait 2 seconds for route changes to take effect
+      return () => clearTimeout(timer);
     }
   }, [currentStatus]);
 
@@ -174,6 +184,7 @@ function App() {
                 setProfiles={setProfiles}
                 currentStatus={currentStatus}
                 openConnectInstalled={openConnectInstalled}
+                passwordStorage={passwordStorage}
                 showAlert={showAlert}
                 addLog={addLog}
                 saveProfiles={saveProfiles}
