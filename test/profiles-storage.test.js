@@ -35,3 +35,29 @@ test('App.jsx passes the storage mode down to ConnectionForm', () => {
   assert.match(app, /setPasswordStorage\(result\.passwordStorage \|\| null\)/);
   assert.match(app, /passwordStorage=\{passwordStorage\}/);
 });
+
+test('migration detects plaintext on the stored form, not the decrypted profiles', () => {
+  const code = read('main.js');
+  // Regression: the condition once tested the DECRYPTED profiles, where
+  // every profile with a saved password has a non-empty `password` — so
+  // every read re-encrypted, rewrote profiles.json, and logged "Migrated
+  // stored profiles to encrypted passwords" again (twice at startup once
+  // the tray began reading profiles, and on every status change).
+  assert.match(
+    code,
+    /const stored = JSON\.parse\(data\);/,
+    'the raw stored array must be parsed once, before decryption'
+  );
+  assert.match(
+    code,
+    /stored\.some\(profile => profile\.password\)/,
+    'the migration condition must look for plaintext on the stored form'
+  );
+  assert.match(
+    code,
+    /return stored\.map\(decryptLoadedProfile\);/,
+    'decryption happens after the migration decision, on return'
+  );
+  // And the buggy shape must be gone: gating on the decrypted list
+  assert.doesNotMatch(code, /profiles\.some\(profile => profile\.password\)/);
+});

@@ -893,19 +893,22 @@ function readProfiles() {
     return [];
   }
   const data = fs.readFileSync(PROFILES_FILE, 'utf8');
-  const profiles = JSON.parse(data).map(decryptLoadedProfile);
+  const stored = JSON.parse(data);
 
   // One-time migration: a file written before #6 still holds plaintext
-  // passwords. Rewrite it through the encryption path immediately.
-  if (profiles.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
+  // passwords. Detect them on the STORED form. Testing the decrypted
+  // profiles instead made this true on every read — each one re-encrypted,
+  // rewrote the file, and logged the migration again (twice at startup once
+  // the tray began reading profiles, and on every status change).
+  if (stored.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
     try {
-      writeProfilesFile(profiles.map(encryptProfileForStorage));
+      writeProfilesFile(stored.map(encryptProfileForStorage));
       sendLog('Migrated stored profiles to encrypted passwords', 'info');
     } catch (error) {
       sendLog(`[WARNING] Could not migrate profiles to encrypted storage: ${error.message}`, 'error');
     }
   }
-  return profiles;
+  return stored.map(decryptLoadedProfile);
 }
 
 ipcMain.handle('load-profiles', async () => {
