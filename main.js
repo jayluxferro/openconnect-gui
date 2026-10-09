@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, shell, safeStorage, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, shell, safeStorage, nativeImage, dialog } = require('electron');
 const { spawn, exec } = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { redactLog } = require('./lib/redact');
 const { TRAY_ICON_BASE64 } = require('./lib/tray-icon');
+const { autoUpdater } = require('electron-updater');
 const { createLineLogger } = require('./lib/line-logger');
 
 let mainWindow;
@@ -1390,12 +1391,68 @@ async function promptForSudoPassword() {
   });
 }
 
+// Auto-update (fork feature, deliberately not part of the upstream PR): the
+// app checks this fork's GitHub releases over HTTPS, downloads silently, and
+// offers a restart when the update is ready. electron-updater refuses an
+// update whose Developer ID signature does not match the running app
+// (verifyUpdateCodeSignature stays at its secure default), so a compromised
+// release channel still cannot push different-signed code.
+function setupAutoUpdate() {
+  if (!app.isPackaged) {
+    return; // dev builds have no update feed; stay quiet about it
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  // Mirror to stdout as well as the Logs tab: sendLog only delivers while the
+  // main window is alive, but update problems are exactly what you want in a
+  // terminal capture when debugging a packaged build.
+  autoUpdater.logger = {
+    info: (message) => { console.log(`[update] ${message}`); sendLog(String(message), 'info'); },
+    warn: (message) => { console.warn(`[update] ${message}`); sendLog(String(message), 'warn'); },
+    error: (message) => { console.error(`[update] ${message}`); sendLog(String(message), 'error'); },
+  };
+
+  autoUpdater.on('update-downloaded', (info) => {
+    sendLog(`Update ${info.version} downloaded — install on restart`, 'info');
+    dialog
+      .showMessageBox({
+        type: 'info',
+        title: 'Update ready',
+        message: `Version ${info.version} is downloaded and ready to install.`,
+        detail:
+          connectionStatus === 'connected'
+            ? 'Restarting will disconnect the active VPN session. It also installs automatically when you quit.'
+            : 'Restart now to switch to it, or it installs automatically when you quit.',
+        buttons: ['Restart now', 'Later'],
+        defaultId: 0,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          app.isQuitting = true;
+          autoUpdater.quitAndInstall();
+        }
+      })
+      .catch(() => {}); // window teardown races must not surface as errors
+  });
+
+  // Delayed so the check never competes with splash/window load
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(() => {
+      // Offline, rate-limited, or feed missing: logged via the logger above;
+      // never fatal — the app is fully usable without updates.
+    });
+  }, 10000);
+}
+
 // App lifecycle
 app.whenReady().then(() => {
   // Show splash screen first
   createSplashWindow();
 
   // Don't create main window yet - wait for splash to complete
+
+  setupAutoUpdate();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
