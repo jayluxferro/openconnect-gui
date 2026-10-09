@@ -12,6 +12,14 @@ import { Button } from './components/ui/button';
 // identical to the per-check IPC version.
 const REVEAL_MS = 300;
 
+// When every check passed, the splash has nothing to ask the user, so it
+// advances on its own after this beat — long enough to read "completed
+// successfully!" and see the green rows, short enough to feel instant. The
+// Continue button stays clickable the whole time as a manual shortcut (and
+// as the fallback if this timer somehow never fires). Any failure skips the
+// auto-advance entirely: a human decides what to do about a broken setup.
+const AUTO_ADVANCE_MS = 900;
+
 // The bridge shape carries no free-text failure line, so the exact copy
 // main.js used to push via 'splash-error' lives here, keyed by the check
 // names main sends ('OpenConnect Binary', 'Expect Binary'); anything else
@@ -57,6 +65,15 @@ function Splash() {
   const [version, setVersion] = useState('');
   const revealTimers = useRef([]);
   const resultsReceived = useRef(false);
+  // Single gate for leaving the splash: the auto-advance timer and the
+  // Continue button both route through here, so neither a race between them
+  // nor a double click can send 'splash-ready' twice.
+  const advanced = useRef(false);
+  const advance = () => {
+    if (advanced.current) return;
+    advanced.current = true;
+    window.ocSplash?.ready();
+  };
 
   useEffect(() => {
     const oc = window.ocSplash;
@@ -116,6 +133,8 @@ function Splash() {
           });
         } else {
           setStatusText('System checks completed successfully!');
+          // All checks green: go on without waiting for a tap.
+          timers.push(setTimeout(() => advance(), AUTO_ADVANCE_MS));
         }
       }, (results.length + 1) * REVEAL_MS));
     });
@@ -132,7 +151,7 @@ function Splash() {
   };
 
   const handleLoginClick = () => {
-    window.ocSplash?.ready();
+    advance();
   };
 
   const getIconForStatus = (status) => {

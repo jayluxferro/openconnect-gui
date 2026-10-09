@@ -1391,6 +1391,15 @@ ipcMain.on('splash-loaded', async () => {
 });
 
 ipcMain.on('splash-ready', () => {
+  // A double-fire (the splash's auto-advance racing a button click, or a
+  // stray second ready) must not stack a second main window on the first.
+  // mainWindow keeps a stale reference after a real close, so test liveness.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (splashWindow) {
+      splashWindow.close();
+    }
+    return;
+  }
   // System checks passed, create and show main window
   createWindow();
 
