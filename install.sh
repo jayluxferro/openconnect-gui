@@ -2,7 +2,9 @@
 #
 # One-click installer for OpenConnect VPN (macOS).
 #
-#   1. Installs Homebrew if missing (official installer, non-interactive)
+#   1. Installs Homebrew if missing (official installer, non-interactive;
+#      authorized with a one-time macOS password dialog — never typed in
+#      the terminal)
 #   2. Installs openconnect via Homebrew (skips if already present)
 #   3. Downloads the app DMG (latest GitHub release, or --dmg override)
 #   4. Copies the app to /Applications (replacing any older copy)
@@ -20,7 +22,10 @@
 # /dev/null. Under `curl … | bash` the script itself IS stdin, and any
 # child that reads stdin (brew's auto-update did, on a fresh Mac) swallows
 # the rest of the script — the run then ends silently mid-way. No step
-# needs interactive input; the guards make that impossible.
+# needs interactive input; the guards make that impossible. The one thing
+# that DOES need input — the sudo password for a Homebrew install — is
+# collected through a GUI dialog (or /dev/tty, never the script's stdin)
+# and fed to sudo -S on a private pipe.
 #
 set -euo pipefail
 
@@ -48,10 +53,117 @@ while [ $# -gt 0 ]; do
     --dmg)             DMG_SOURCE="${2:?--dmg needs a path or URL}"; shift 2 ;;
     --repo)            REPO="${2:?--repo needs owner/name}"; shift 2 ;;
     --skip-openconnect) SKIP_OPENCONNECT=1; shift ;;
-    -h|--help)         sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,28p' "$0"; exit 0 ;;
     *)                 die "unknown option: $1 (try --help)" ;;
   esac
 done
+
+# --- sudo authorization (only used to install Homebrew) ------------------------
+# Homebrew's installer needs sudo to create /opt/homebrew. NONINTERACTIVE mode
+# plus a piped script means nothing can prompt on stdin, so we collect the
+# password ourselves, seed `sudo`'s cached timestamp, and keep it fresh until
+# this script exits. The password is never printed, logged, or written to disk.
+MOUNT_POINT=""                                    # set once a DMG is mounted
+SUDO_SEEDED=0
+SUDO_KEEPALIVE_PID=""
+SUDO_KEEPALIVE_SECS="${SUDO_KEEPALIVE_SECS:-45}"  # overridable for the test harness
+TTY_DEV="${TTY_DEV:-/dev/tty}"                    # ditto
+
+cleanup() {
+  if [ -n "$SUDO_KEEPALIVE_PID" ]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    SUDO_KEEPALIVE_PID=""
+  fi
+  if [ "$SUDO_SEEDED" -eq 1 ]; then
+    sudo -k </dev/null >/dev/null 2>&1 || true    # drop the timestamp we raised
+  fi
+  if [ -n "$MOUNT_POINT" ]; then
+    hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+# GUI dialog. Prints the password on stdout; exit 130 = user canceled,
+# exit 1 = no dialog possible (caller falls back to the terminal).
+prompt_password_dialog() {
+  local message="$1" err_file err pw rc
+  err_file="$(mktemp)"
+  pw="$(osascript -e 'on run argv
+  return text returned of (display dialog (item 1 of argv) default answer "" with hidden answer with title "OpenConnect VPN installer" with icon caution buttons {"Authorize", "Cancel"} default button "Authorize")
+end run' "$message" </dev/null 2>"$err_file")"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$err_file" </dev/null
+    printf '%s\n' "$pw"
+    return 0
+  fi
+  err="$(cat "$err_file" </dev/null)"
+  rm -f "$err_file" </dev/null
+  case "$err" in
+    *"User canceled"*|*"User Cancelled"*) return 130 ;;
+  esac
+  return 1
+}
+
+# Terminal fallback for machines with no GUI session (e.g. SSH): reads from
+# /dev/tty, never the script's piped stdin.
+prompt_password_tty() {
+  local message="$1" pw
+  printf '%s\n%s' "$message" "password: " >&2
+  IFS= read -rs pw < "$TTY_DEV" || return 1
+  printf '\n' >&2
+  printf '%s\n' "$pw"
+}
+
+prompt_password() {
+  local message="$1" rc
+  if command -v osascript >/dev/null 2>&1; then
+    prompt_password_dialog "$message"
+    rc=$?
+    # 0 = got it, 130 = canceled (die, don't pester); 1 = try the terminal.
+    if [ "$rc" -ne 1 ]; then return "$rc"; fi
+  fi
+  prompt_password_tty "$message"
+}
+
+# Seeds sudo's cached timestamp (up to 3 password attempts) and keeps it
+# fresh in the background for the rest of the run. Homebrew's installer
+# then sails through its `sudo -n` checks and privileged steps unprompted.
+authorize_sudo() {
+  if sudo -n true </dev/null >/dev/null 2>&1; then
+    ok "sudo already authorized in this terminal"
+    return 0
+  fi
+  local attempt pw rc
+  for attempt in 1 2 3; do
+    # The `if` also suspends set -e inside the substitution: a canceled or
+    # failed prompt must reach our rc handling, not abort the script.
+    if pw="$(prompt_password "Homebrew needs your macOS password once, to install into /opt/homebrew (attempt ${attempt} of 3).")"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 130 ]; then
+      die "Password dialog canceled. Homebrew needs authorization once — re-run the installer, or install Homebrew from https://brew.sh and re-run."
+    fi
+    if [ -n "$pw" ] && printf '%s\n' "$pw" | sudo -S -v -p '' >/dev/null 2>&1; then
+      pw=""
+      SUDO_SEEDED=1
+      (
+        while kill -0 "$$" 2>/dev/null; do
+          sudo -n true </dev/null >/dev/null 2>&1 || break
+          sleep "$SUDO_KEEPALIVE_SECS"
+        done
+      ) &
+      SUDO_KEEPALIVE_PID=$!
+      disown 2>/dev/null || true    # no "Terminated" job notice on cleanup
+      ok "authorized — sudo session kept alive for the rest of the install"
+      return 0
+    fi
+    warn "incorrect password, trying again"
+  done
+  die "Three incorrect passwords. Install Homebrew from https://brew.sh manually, then re-run."
+}
 
 # --- preflight ----------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || die "This installer is for macOS only."
@@ -66,13 +178,15 @@ if ! dscl . -read /Groups/admin GroupMembership 2>/dev/null | grep -qw "$USER"; 
 fi
 
 # --- 1. Homebrew ---------------------------------------------------------------
+# BREW_PATHS: where to look for an existing brew outside PATH (overridable
+# for the test harness; the defaults are the two real install locations).
 step "Checking for Homebrew"
 if command -v brew >/dev/null 2>&1; then
   ok "found at $(command -v brew)"
 else
-  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+  for candidate in ${BREW_PATHS:-/opt/homebrew/bin/brew /usr/local/bin/brew}; do
     if [ -x "$candidate" ]; then
-      eval "$("$candidate" shellenv)"
+      eval "$("$candidate" shellenv </dev/null)"
       ok "found at $candidate (added to PATH for this run)"
       break
     fi
@@ -81,11 +195,12 @@ fi
 
 if ! command -v brew >/dev/null 2>&1; then
   warn "Homebrew not found — installing it now."
-  warn "The official installer may ask for your macOS password to create /opt/homebrew."
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+  warn "A macOS password dialog will appear once to authorize the installation."
+  authorize_sudo
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh </dev/null)" \
     </dev/null || die "Homebrew installation failed. Install it manually from https://brew.sh and re-run."
-  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-    if [ -x "$candidate" ]; then eval "$("$candidate" shellenv)"; break; fi
+  for candidate in ${BREW_PATHS:-/opt/homebrew/bin/brew /usr/local/bin/brew}; do
+    if [ -x "$candidate" ]; then eval "$("$candidate" shellenv </dev/null)"; break; fi
   done
   command -v brew >/dev/null 2>&1 || die "Homebrew installed but not on PATH. Open a new terminal and re-run."
   ok "Homebrew installed"
@@ -111,8 +226,6 @@ fi
 # --- 3. DMG --------------------------------------------------------------------
 step "Locating the app DMG"
 DMG_FILE=""
-cleanup() { [ -n "${MOUNT_POINT:-}" ] && hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true; }
-trap cleanup EXIT
 
 if [ -n "$DMG_SOURCE" ]; then
   case "$DMG_SOURCE" in
