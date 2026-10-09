@@ -21,7 +21,7 @@ Running OpenConnect processes, with a Kill button that asks for your sudo passwo
 - Flags network routes left over from a previous network, a common cause of failed connections after switching networks, and deletes them.
 - Lists OpenConnect processes, including ones started from a terminal or another tool, and kills them.
 - Checks for OpenConnect and `expect` at startup, and warns if your account is not an administrator.
-- Puts an icon in the menu bar. Its menu shows the connection status and has Show Window and Quit.
+- Puts an icon in the menu bar. Connect to any saved profile, disconnect, and see the live status — including which profile is active — without opening the window. The padlock icon closes when the tunnel is up.
 
 ## Install
 
@@ -78,6 +78,10 @@ Enter a profile name and click Save Profile. Pick a saved profile from the dropd
 
 Profiles are stored in plaintext, password included. To keep the password out of the file, leave the password field empty before saving and type it in each time you connect.
 
+### Menu bar
+
+The menu-bar icon mirrors the app. Its top line shows the connection status and the active profile. Connect lists your saved profiles; picking one starts the tunnel without opening the window. If the profile has no stored password, the window opens with that profile already selected so you can type it. While a tunnel is up the menu offers Disconnect instead, and Quit warns before dropping a live connection.
+
 ### Diagnostics
 
 Opening the Diagnostics tab lists network interfaces (`ifconfig`), reads the routing table (`netstat -rn`), and, if the Connection form has a server URL, tests whether that server is reachable (`nc -zv`).
@@ -133,7 +137,6 @@ Saved profile passwords are encrypted at rest with the macOS Keychain (`safeStor
 - Username and password only. No 2FA prompts yet ([#5](https://github.com/jadedm/openconnect-gui/issues/5)) and no [certificate login](https://github.com/jadedm/openconnect-gui/discussions/15).
 - Reconnect is limited to what OpenConnect does itself: it retries a dropped connection for 60 seconds. After that you reconnect by hand ([idea](https://github.com/jadedm/openconnect-gui/discussions/17)).
 - [One connection at a time](https://github.com/jadedm/openconnect-gui/discussions/26).
-- The menu bar icon [cannot connect or disconnect](https://github.com/jadedm/openconnect-gui/discussions/25).
 - Light theme only.
 
 ## Roadmap and ideas

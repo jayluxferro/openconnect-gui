@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -16,7 +16,8 @@ function ConnectionForm({
   addLog,
   saveProfiles,
   loadProfiles,
-  onServerChange
+  onServerChange,
+  focusProfile
 }) {
   const [formData, setFormData] = useState({
     profileName: '',
@@ -77,6 +78,14 @@ function ConnectionForm({
     }
   };
 
+  // Tray-initiated: the menu bar asked this window to load a profile (its
+  // tray connect needs a password typed by a human).
+  useEffect(() => {
+    if (focusProfile?.name) {
+      handleProfileSelect(focusProfile.name);
+    }
+  }, [focusProfile]);
+
   const handleConnect = async () => {
     if (!formData.serverUrl || !formData.username || !formData.password) {
       showAlert('Please fill in all required fields', 'error');
@@ -87,6 +96,7 @@ function ConnectionForm({
 
     const config = {
       server: formData.serverUrl.trim(),
+      profileName: formData.profileName || undefined,
       username: formData.username.trim(),
       password: formData.password.trim(),
       authgroup: formData.authgroup?.trim() || undefined,

@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onConnectionError: (callback) => {
     ipcRenderer.on('connection-error', (event, error) => callback(error));
+  },
+  // The tray asks the window to load a profile (a tray connect was started
+  // on a profile that has no stored password).
+  onSelectProfile: (callback) => {
+    ipcRenderer.on('select-profile', (event, profileName) => callback(profileName));
   }
 });
 
