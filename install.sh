@@ -16,11 +16,18 @@
 #
 # Safe to re-run: every step checks whether it is already done.
 #
+# Pipe-safe: every external command runs with stdin redirected from
+# /dev/null. Under `curl … | bash` the script itself IS stdin, and any
+# child that reads stdin (brew's auto-update did, on a fresh Mac) swallows
+# the rest of the script — the run then ends silently mid-way. No step
+# needs interactive input; the guards make that impossible.
+#
 set -euo pipefail
 
 REPO="jayluxferro/openconnect-gui"
 APP_NAME="OpenConnect VPN"
-APP_DIR="/Applications"
+# Overridable for the test harness; /Applications for every real install
+APP_DIR="${APP_DIR:-/Applications}"
 DMG_SOURCE=""
 SKIP_OPENCONNECT=0
 
@@ -76,7 +83,7 @@ if ! command -v brew >/dev/null 2>&1; then
   warn "Homebrew not found — installing it now."
   warn "The official installer may ask for your macOS password to create /opt/homebrew."
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-    || die "Homebrew installation failed. Install it manually from https://brew.sh and re-run."
+    </dev/null || die "Homebrew installation failed. Install it manually from https://brew.sh and re-run."
   for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
     if [ -x "$candidate" ]; then eval "$("$candidate" shellenv)"; break; fi
   done
@@ -89,10 +96,10 @@ if [ "$SKIP_OPENCONNECT" -eq 1 ]; then
   step "Skipping openconnect (--skip-openconnect)"
 elif command -v openconnect >/dev/null 2>&1; then
   step "Checking for openconnect"
-  ok "already installed: $(command -v openconnect) ($(openconnect --version 2>&1 | head -1 | sed 's/^ *[Oo]pen[Cc]onnect //;s/ *$//'))"
+  ok "already installed: $(command -v openconnect) ($(openconnect --version </dev/null 2>&1 | head -1 | sed 's/^ *[Oo]pen[Cc]onnect //;s/ *$//'))"
 else
   step "Installing openconnect via Homebrew"
-  brew install openconnect || die "brew install openconnect failed."
+  brew install openconnect </dev/null || die "brew install openconnect failed."
   ok "installed: $(command -v openconnect)"
 fi
 if command -v expect >/dev/null 2>&1; then
@@ -119,21 +126,27 @@ if [ -n "$DMG_SOURCE" ]; then
       ok "using $DMG_FILE" ;;
   esac
 else
+  # Shell-only asset lookup. No interpreters: on a fresh Mac /usr/bin/python3
+  # is a Command Line Tools stub that pops an installer dialog instead of
+  # running. URLs contain no commas or quotes, so tr+sed is sound here.
   API_URL="https://api.github.com/repos/${REPO}/releases/latest"
-  DMG_URL="$(curl -fsSL "$API_URL" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    for asset in data.get("assets", []):
-        if asset["name"].endswith(".dmg"):
-            print(asset["browser_download_url"]); break
-    else:
-        sys.exit("release has no .dmg asset")
-except Exception as e:
-    sys.exit(str(e))
-')" || die "could not find a release DMG on github.com/${REPO}. Publish a release or pass --dmg."
+  DMG_URL="$(curl -fsSL "$API_URL" </dev/null \
+    | tr ',' '\n' \
+    | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.dmg\)".*/\1/p' \
+    | head -1)"
+  if [ -z "$DMG_URL" ]; then
+    # Fallback with no API dependency (and no rate limits): releases/latest
+    # redirects to releases/tag/<tag>, and GitHub names the asset
+    # <product with spaces as dots>-<version>-arm64.dmg.
+    LATEST_TAG="$(curl -fsSI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" </dev/null \
+      | sed -n 's|.*/tag/||p')"
+    if [ -n "$LATEST_TAG" ]; then
+      DMG_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/OpenConnect.VPN-${LATEST_TAG#v}-arm64.dmg"
+    fi
+  fi
+  [ -n "$DMG_URL" ] || die "could not find a release DMG on github.com/${REPO}. Publish a release or pass --dmg."
   DMG_FILE="$(mktemp -t ocgui).dmg"
-  curl -fL --progress-bar "$DMG_URL" -o "$DMG_FILE" || die "download failed: $DMG_URL"
+  curl -fL --progress-bar "$DMG_URL" -o "$DMG_FILE" </dev/null || die "download failed: $DMG_URL"
   ok "downloaded latest release from github.com/${REPO}"
 fi
 
@@ -141,7 +154,7 @@ fi
 step "Installing ${APP_NAME} to ${APP_DIR}"
 MOUNT_POINT="$(mktemp -d)/mount"
 hdiutil attach "$DMG_FILE" -nobrowse -readonly -mountpoint "$MOUNT_POINT" -quiet \
-  || die "could not mount the DMG (it may be corrupted — re-download)."
+  </dev/null || die "could not mount the DMG (it may be corrupted — re-download)."
 APP_IN_DMG="$(find "$MOUNT_POINT" -maxdepth 1 -name '*.app' -print -quit)"
 [ -n "$APP_IN_DMG" ] || die "no .app found inside the DMG."
 
@@ -149,14 +162,14 @@ if [ -d "${APP_DIR}/${APP_NAME}.app" ]; then
   rm -rf "${APP_DIR}/${APP_NAME}.app"
   ok "removed previous version"
 fi
-ditto "$APP_IN_DMG" "${APP_DIR}/${APP_NAME}.app" || die "could not copy the app to ${APP_DIR}."
+ditto "$APP_IN_DMG" "${APP_DIR}/${APP_NAME}.app" </dev/null || die "could not copy the app to ${APP_DIR}."
 # Clear quarantine recursively without xattr -r (not available on newer macOS).
-find "${APP_DIR}/${APP_NAME}.app" -exec xattr -d com.apple.quarantine {} + >/dev/null 2>&1 || true
+find "${APP_DIR}/${APP_NAME}.app" -exec xattr -d com.apple.quarantine {} + >/dev/null 2>&1 </dev/null || true
 ok "installed at ${APP_DIR}/${APP_NAME}.app"
 
 # --- 5. launch -------------------------------------------------------------------
 step "Launching ${APP_NAME}"
-open -a "${APP_DIR}/${APP_NAME}.app"
+open -a "${APP_DIR}/${APP_NAME}.app" </dev/null
 ok "started"
 
 printf '\n%s\n' "${BOLD}Done.${RESET} Connect from the app — your macOS password is requested at connect time."
