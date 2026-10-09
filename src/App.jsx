@@ -32,6 +32,9 @@ function App() {
   // a profile with no stored password). `at` re-triggers the effect when the
   // same profile is requested twice in a row.
   const [focusProfile, setFocusProfile] = useState({ name: null, at: 0 });
+  // The tunnel's own address (or null when no tunnel). Split-tunnel VPNs
+  // leave the public IP unchanged, so both addresses are shown together.
+  const [vpnAddress, setVpnAddress] = useState(null);
   // Mirror of the updater's phase from main ('idle' | 'checking' |
   // 'not-available' | 'downloading' | 'ready' | 'error' | 'unavailable'),
   // plus a local flag so the footer reacts before the IPC round-trip ends.
@@ -109,6 +112,10 @@ function App() {
     // check was started from the tray or by the automatic startup check.
     window.electronAPI.onUpdateState((state) => {
       setUpdateState(state);
+    });
+
+    window.electronAPI.onTunnelAddress((address) => {
+      setVpnAddress(address);
     });
   }, []);
 
@@ -205,6 +212,12 @@ function App() {
               <span className="font-mono font-semibold">
                 {ipAddress.loading ? 'Loading...' : ipAddress.current}
               </span>
+            </div>
+          )}
+          {vpnAddress && (
+            <div className="text-sm" title="Address the VPN assigned to this machine. On split-tunnel VPNs your public IP stays the same — this is the tunnel's own address.">
+              <span className="text-muted-foreground">VPN: </span>
+              <span className="font-mono font-semibold">{vpnAddress}</span>
             </div>
           )}
           <Badge variant={currentStatus === 'connected' ? 'default' : currentStatus === 'connecting' ? 'secondary' : 'outline'}>

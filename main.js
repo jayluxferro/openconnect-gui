@@ -6,6 +6,7 @@ const fs = require('fs');
 const { redactLog } = require('./lib/redact');
 const { TRAY_ICON_IDLE, TRAY_ICON_CONNECTED } = require('./lib/tray-icon');
 const { buildTrayTemplate, statusLabel } = require('./lib/tray-menu');
+const { parseTunnelAddress } = require('./lib/tunnel-address');
 const { autoUpdater } = require('electron-updater');
 const { createLineLogger } = require('./lib/line-logger');
 
@@ -18,6 +19,10 @@ let connectionStatus = 'disconnected';
 // Name of the profile behind the current/last connection attempt, so the
 // tray can say "Connected to <name>" — display only, never a credential.
 let activeProfileName = null;
+// The tunnel's own address (openconnect's "Configured as <ip>"), shown in
+// the header. On split-tunnel VPNs the public IP never changes, so this is
+// the only visible proof the tunnel took an address. Cleared on disconnect.
+let tunnelAddress = null;
 // Set while the user (or app quit) is intentionally tearing the tunnel down,
 // so the child's 130/143 exit code is not surfaced as an error (#38).
 let userDisconnectRequested = false;
@@ -590,10 +595,22 @@ async function connectVpn(config) {
     let connected = false;
     let authError = false;
 
-    // Log whole lines only, so redaction never sees a secret cut in half (#37).
-    // Status checks below still read each raw chunk.
-    const stdoutLog = createLineLogger((text) => sendLog(text));
-    const stderrLog = createLineLogger((text) => sendLog(text));
+    // Log whole lines only, so redaction never sees a secret cut in half
+    // (#37) and the tunnel-address parser never sees half a line. Status
+    // checks below still read each raw chunk.
+    const onConnectionLine = (text) => {
+      const address = parseTunnelAddress(text);
+      if (address && address !== tunnelAddress) {
+        tunnelAddress = address;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('tunnel-address', address);
+        }
+        sendLog(`Tunnel address: ${address}`, 'info');
+      }
+      sendLog(text);
+    };
+    const stdoutLog = createLineLogger(onConnectionLine);
+    const stderrLog = createLineLogger(onConnectionLine);
 
     // Handle stdout
     sudoProcess.stdout.on('data', (data) => {
@@ -695,7 +712,10 @@ async function connectVpn(config) {
         sendLog(`  - MTU/DTLS issues`, 'error');
 
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('connection-error', 'VPN disconnected. Check logs for details.');
+          mainWindow.webContents.send(
+            'connection-error',
+            'VPN disconnected — network interruption, idle timeout, or server policy ended the session. Details are in the Logs tab.'
+          );
         }
       }
     });
@@ -704,8 +724,14 @@ async function connectVpn(config) {
       sendLog(`Error: ${error.message}`, 'error');
       openconnectProcess = null;
       updateStatus('disconnected');
+      // #9: raw spawn errors ("spawn expect ENOENT") read like internals.
+      // The one users can actually hit means the app bundle is broken.
+      const friendly =
+        error.code === 'ENOENT'
+          ? 'Could not start the connection helper — the app looks incomplete. Reinstall it and try again.'
+          : redactLog(error.message);
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('connection-error', redactLog(error.message));
+        mainWindow.webContents.send('connection-error', friendly);
       }
     });
 
@@ -1384,6 +1410,14 @@ function updateStatus(status) {
   connectionStatus = status;
   if (status === 'disconnected') {
     activeProfileName = null;
+    // Retire the tunnel address with the tunnel — a stale address from the
+    // previous session must not survive into the next one's header.
+    if (tunnelAddress !== null) {
+      tunnelAddress = null;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('tunnel-address', null);
+      }
+    }
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('status-changed', status);

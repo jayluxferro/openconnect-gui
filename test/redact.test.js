@@ -120,3 +120,33 @@ test('already redacted text is unchanged', () => {
   const once = redactLog(verboseChunk);
   assert.equal(redactLog(once), once);
 });
+
+test('auth material under non-cookie names is masked: header form', () => {
+  assert.equal(redactLog('X-Auth-Token: AAABBBCCC'), 'X-Auth-Token: <redacted>');
+  assert.equal(redactLog('password: hunter2'), 'password: <redacted>');
+  // Header form masks to end of line: a bearer prefix must not leave the
+  // actual credential visible after it.
+  assert.equal(redactLog('Token: bearer AAABBBCCC'), 'Token: <redacted>');
+});
+
+test('auth material under non-cookie names is masked: assignment form', () => {
+  assert.equal(redactLog('session_id=abc123&next=1'), 'session_id=<redacted>&next=1');
+  assert.equal(redactLog('secret="s3cr3t value"'), 'secret=<redacted>');
+  assert.equal(redactLog('SESSION-ID: feedfacedeadbeef'), 'SESSION-ID: <redacted>');
+  assert.equal(redactLog('userauthcookie is covered elsewhere'), 'userauthcookie is covered elsewhere');
+});
+
+test('plain prose with the word password is untouched', () => {
+  // These shapes appear in openconnect prompts; the app matches on them
+  // and users read them — no = or : follows the word, so nothing masks.
+  assert.equal(redactLog('Please enter your username and password'), 'Please enter your username and password');
+  assert.equal(redactLog('sending password...'), 'sending password...');
+});
+
+test('protocol address lines are not over-masked', () => {
+  assert.equal(redactLog('X-CSTP-Address: 10.0.0.2'), 'X-CSTP-Address: 10.0.0.2');
+  assert.equal(
+    redactLog('Configured as 192.168.98.179, with SSL connected and DTLS disabled'),
+    'Configured as 192.168.98.179, with SSL connected and DTLS disabled'
+  );
+});
