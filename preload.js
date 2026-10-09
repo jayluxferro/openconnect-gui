@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   connectVPN: (config) => ipcRenderer.invoke('connect-vpn', config),
   disconnectVPN: () => ipcRenderer.invoke('disconnect-vpn'),
   getStatus: () => ipcRenderer.invoke('get-status'),
+  getTunnelAddress: () => ipcRenderer.invoke('get-tunnel-address'),
   checkOpenConnect: () => ipcRenderer.invoke('check-openconnect'),
 
   // Profile management methods

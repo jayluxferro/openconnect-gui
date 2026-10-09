@@ -599,6 +599,9 @@ async function connectVpn(config) {
     // (#37) and the tunnel-address parser never sees half a line. Status
     // checks below still read each raw chunk.
     const onConnectionLine = (text) => {
+      // Raw line first, then any derived note, so the Logs tab reads in
+      // the order things happened instead of the note preceding its cause.
+      sendLog(text);
       const address = parseTunnelAddress(text);
       if (address && address !== tunnelAddress) {
         tunnelAddress = address;
@@ -607,7 +610,6 @@ async function connectVpn(config) {
         }
         sendLog(`Tunnel address: ${address}`, 'info');
       }
-      sendLog(text);
     };
     const stdoutLog = createLineLogger(onConnectionLine);
     const stderrLog = createLineLogger(onConnectionLine);
@@ -724,11 +726,13 @@ async function connectVpn(config) {
       sendLog(`Error: ${error.message}`, 'error');
       openconnectProcess = null;
       updateStatus('disconnected');
-      // #9: raw spawn errors ("spawn expect ENOENT") read like internals.
-      // The one users can actually hit means the app bundle is broken.
+      // #9: raw spawn errors ("spawn expect ENOENT") read like internals. The
+      // spawned binary is `expect`, a macOS system tool at /usr/bin/expect —
+      // its absence is a system problem, not a broken app bundle, so name it
+      // and its fix instead of sending the user to reinstall the app.
       const friendly =
         error.code === 'ENOENT'
-          ? 'Could not start the connection helper — the app looks incomplete. Reinstall it and try again.'
+          ? 'Could not start the connection helper (expect) — a macOS system tool normally at /usr/bin/expect. If it is missing, install it with: brew install expect'
           : redactLog(error.message);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('connection-error', friendly);
@@ -811,6 +815,13 @@ function disconnectVPN() {
 // Get connection status
 ipcMain.handle('get-status', async () => {
   return connectionStatus;
+});
+
+// The tunnel address is pushed on change only, so a renderer that reloads
+// mid-session (e.g. after an in-app openconnect install) would never see
+// the current one — pull it on mount, exactly like the status.
+ipcMain.handle('get-tunnel-address', async () => {
+  return tunnelAddress;
 });
 
 // #33: app is main-process-only in Electron, so the renderer asks for the
@@ -900,10 +911,13 @@ function readProfiles() {
   // profiles instead made this true on every read — each one re-encrypted,
   // rewrote the file, and logged the migration again (twice at startup once
   // the tray began reading profiles, and on every status change).
+  // Success stays silent: the UI already states the storage mode on every
+  // load (passwordStorageMode -> ConnectionForm), so announcing the
+  // migration would re-tell the user something the app tells them
+  // continuously. Only failure is worth a line — plaintext persisted.
   if (stored.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
     try {
       writeProfilesFile(stored.map(encryptProfileForStorage));
-      sendLog('Migrated stored profiles to encrypted passwords', 'info');
     } catch (error) {
       sendLog(`[WARNING] Could not migrate profiles to encrypted storage: ${error.message}`, 'error');
     }

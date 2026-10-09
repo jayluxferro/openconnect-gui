@@ -150,3 +150,17 @@ test('protocol address lines are not over-masked', () => {
     'Configured as 192.168.98.179, with SSL connected and DTLS disabled'
   );
 });
+
+test('the legacy header rule does not mask across the newline', () => {
+  // \s* around the colon also matched the newline, so a line ending in
+  // "authorization" swallowed the beginning of the next line. The generic
+  // rules were built with [ \t] from the start; the legacy one must match
+  // that discipline.
+  assert.equal(
+    redactLog('authorization\n: hunter2'),
+    'authorization\n: hunter2'
+  );
+  // Same-line forms still mask (the captured separator is preserved as-is)
+  assert.equal(redactLog('authorization: hunter2'), 'authorization: <redacted>');
+  assert.equal(redactLog('Cookie:\tabc123'), 'Cookie:\t<redacted>');
+});
