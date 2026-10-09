@@ -25,15 +25,25 @@ Running OpenConnect processes, with a Kill button that asks for your sudo passwo
 
 ## Install
 
-1. Download the `.dmg` from [Releases](https://github.com/jadedm/openconnect-gui/releases). The published build is for Apple Silicon; on an Intel Mac, build it yourself ([CONTRIBUTING.md](CONTRIBUTING.md#build-the-dmg)).
-2. Open it and drag "OpenConnect VPN" into Applications.
-3. Install OpenConnect if you do not have it:
+1. Get the app — any one of:
+   - double-click the `.pkg` from [Releases](https://github.com/jayluxferro/openconnect-gui/releases), or
+   - drag "OpenConnect VPN" from the `.dmg` into Applications, or
+   - one line in Terminal (installs Homebrew and openconnect too, if missing):
+
+     ```bash
+     curl -fsSL https://raw.githubusercontent.com/jayluxferro/openconnect-gui/develop/install.sh | bash
+     ```
+
+   The published build is for Apple Silicon; on an Intel Mac, build it yourself ([CONTRIBUTING.md](CONTRIBUTING.md#build-the-dmg)).
+2. Install OpenConnect if you installed by hand and do not have it:
 
    ```bash
    brew install openconnect
    ```
 
 `expect` ships with macOS. Your account needs to be an administrator, because OpenConnect runs under `sudo`.
+
+Once installed, the app updates itself: it checks this repository's releases in the background and applies the update after asking you (see [SECURITY.md](SECURITY.md) for how updates are verified).
 
 ### First launch
 

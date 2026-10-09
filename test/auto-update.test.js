@@ -17,6 +17,15 @@ test('a downloaded update installs via quitAndInstall after the user is asked', 
   const code = read('main.js');
   assert.match(code, /autoUpdater\.on\('update-downloaded'/);
   assert.match(code, /autoUpdater\.quitAndInstall\(\)/);
+  // The prompt must warn that restarting drops an active VPN session
+  assert.match(code, /Restarting will disconnect the active VPN session/);
+});
+
+test('updater diagnostics reach stdout, not only the Logs tab', () => {
+  const code = read('main.js');
+  // sendLog delivers only while the main window is alive; the console mirror
+  // keeps update errors visible in terminal captures of packaged builds
+  assert.match(code, /console\.error\(`\[update\] \$\{message\}`\)/);
 });
 
 test('signature verification and downgrade protection stay at their secure defaults', () => {

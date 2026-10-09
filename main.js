@@ -1404,10 +1404,13 @@ function setupAutoUpdate() {
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Mirror to stdout as well as the Logs tab: sendLog only delivers while the
+  // main window is alive, but update problems are exactly what you want in a
+  // terminal capture when debugging a packaged build.
   autoUpdater.logger = {
-    info: (message) => sendLog(String(message), 'info'),
-    warn: (message) => sendLog(String(message), 'warn'),
-    error: (message) => sendLog(String(message), 'error'),
+    info: (message) => { console.log(`[update] ${message}`); sendLog(String(message), 'info'); },
+    warn: (message) => { console.warn(`[update] ${message}`); sendLog(String(message), 'warn'); },
+    error: (message) => { console.error(`[update] ${message}`); sendLog(String(message), 'error'); },
   };
 
   autoUpdater.on('update-downloaded', (info) => {
@@ -1417,7 +1420,10 @@ function setupAutoUpdate() {
         type: 'info',
         title: 'Update ready',
         message: `Version ${info.version} is downloaded and ready to install.`,
-        detail: 'Restart now to switch to it, or it installs automatically when you quit.',
+        detail:
+          connectionStatus === 'connected'
+            ? 'Restarting will disconnect the active VPN session. It also installs automatically when you quit.'
+            : 'Restart now to switch to it, or it installs automatically when you quit.',
         buttons: ['Restart now', 'Later'],
         defaultId: 0,
       })
