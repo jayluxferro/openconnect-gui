@@ -49,3 +49,38 @@ test('SECURITY.md discloses the update channel', () => {
   assert.match(doc, /Application updates\./);
   assert.match(doc, /matches the Developer ID/);
 });
+
+test('manual update check: footer and tray share one path, dev builds answer honestly', () => {
+  const code = read('main.js');
+  // A second click (window + tray racing the automatic check) must return
+  // the in-flight state instead of starting a competing check
+  assert.match(code, /updateCheckInFlight/);
+  assert.match(code, /ipcMain\.handle\('check-for-updates', async \(\) => checkForUpdatesFromUI\(\)\)/);
+  assert.match(code, /'check-update': \(\) => checkForUpdatesFromTray\(\)/);
+  // Dev builds have no update feed (setupAutoUpdate skips them): the manual
+  // check must say so rather than pretend or crash
+  assert.match(code, /phase: 'unavailable'/);
+  // Live phases stream to the renderer while the check runs, so the footer
+  // can show download progress, not just a final answer
+  assert.match(code, /send\('update-state', updateState\)/);
+  // Restart-and-install is guarded on a completed download — a stale
+  // renderer must not be able to quit the app via quitAndInstall
+  assert.match(code, /ipcMain\.handle\('install-update', async \(\) => \{/);
+  assert.match(code, /if \(updateState\.phase === 'ready'\) \{/);
+});
+
+test('preload exposes the manual update surface to the renderer', () => {
+  const code = read('preload.js');
+  assert.match(code, /checkForUpdates: \(\) => ipcRenderer\.invoke\('check-for-updates'\)/);
+  assert.match(code, /installUpdate: \(\) => ipcRenderer\.invoke\('install-update'\)/);
+  assert.match(code, /onUpdateState/);
+});
+
+test('the footer offers the check and renders its live status', () => {
+  const code = read('src/App.jsx');
+  assert.match(code, /window\.electronAPI\.checkForUpdates\(\)/);
+  assert.match(code, /window\.electronAPI\.onUpdateState/);
+  assert.match(code, /Check for Updates/);
+  assert.match(code, /phase === 'downloading'/);
+  assert.match(code, /window\.electronAPI\.installUpdate\(\)/);
+});

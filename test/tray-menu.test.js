@@ -31,6 +31,7 @@ test('disconnected: status line, Connect submenu of profiles, no Disconnect', ()
 
   assert.ok(!find(items, 'Disconnect work'), 'no disconnect item while idle');
   assert.strictEqual(find(items, 'Show OpenConnect VPN').action, 'show');
+  assert.strictEqual(find(items, 'Check for Updates…').action, 'check-update');
   assert.strictEqual(find(items, 'Quit OpenConnect VPN').action, 'quit');
 });
 
@@ -78,6 +79,7 @@ test('main.js wires the tray through the builder and real handlers', () => {
   assert.match(code, /connectFromTray/);
   assert.match(code, /'connect-profile': \(\{ profile \}\) => connectFromTray\(profile\)/);
   assert.match(code, /disconnect: \(\) => disconnectVPN\(\)/);
+  assert.match(code, /'check-update': \(\) => checkForUpdatesFromTray\(\)/);
   assert.match(code, /async function connectVpn\(config\)/);
   assert.match(code, /ipcMain\.handle\('connect-vpn', async \(event, config\) => connectVpn\(config\)\)/);
   assert.match(code, /activeProfileName = config\.profileName \|\| null/);
