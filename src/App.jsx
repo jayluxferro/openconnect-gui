@@ -86,6 +86,10 @@ function App() {
       // Get initial status
       const status = await window.electronAPI.getStatus();
       setCurrentStatus(status);
+
+      // The tunnel address is pushed on change only; after a mid-session
+      // reload this pull is the only way the header gets it back.
+      setVpnAddress(await window.electronAPI.getTunnelAddress());
     };
 
     init();

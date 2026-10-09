@@ -60,4 +60,9 @@ test('migration detects plaintext on the stored form, not the decrypted profiles
   );
   // And the buggy shape must be gone: gating on the decrypted list
   assert.doesNotMatch(code, /profiles\.some\(profile => profile\.password\)/);
+  // Migration success is silent: the UI states the storage mode on every
+  // load (passwordStorage -> ConnectionForm), so announcing the one-time
+  // migration re-tells the user something continuously visible. Failure
+  // still logs — plaintext persisted and that is actionable.
+  assert.doesNotMatch(code, /Migrated stored profiles/);
 });

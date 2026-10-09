@@ -52,6 +52,18 @@ test('server-controlled banner lines cannot spoof the address', () => {
   assert.equal(parseTunnelAddress('Configured as 6.6.6.6, with SSL connected'), '6.6.6.6');
 });
 
+test('captures with address shape but no address substance are rejected', () => {
+  // The regex character class alone would accept all of these; isIP must
+  // have the final word or junk reaches the header.
+  assert.equal(parseTunnelAddress('Connected as 10:32:28'), null); // bare time-of-day
+  assert.equal(parseTunnelAddress('Configured as 999.888.777.666'), null); // impossible octets
+  assert.equal(parseTunnelAddress('Configured as 2001:db8::1.'), null); // trailing period rides in
+  assert.equal(parseTunnelAddress('Configured as fd87:1::beef:'), null); // trailing colon rides in
+  // Real shapes still pass the validation
+  assert.equal(parseTunnelAddress('Configured as 203.0.113.9, with SSL connected'), '203.0.113.9');
+  assert.equal(parseTunnelAddress('Connected as 2001:db8::1'), '2001:db8::1');
+});
+
 test('main.js feeds connection lines to the parser and retires the address on disconnect', () => {
   const code = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
@@ -65,18 +77,23 @@ test('main.js feeds connection lines to the parser and retires the address on di
   // Disconnect clears it and tells the renderer, so no stale address from a
   // previous session can survive into the next one's header
   assert.match(code, /send\('tunnel-address', null\)/);
+  // And a renderer that reloads mid-session can pull the current one
+  assert.match(code, /ipcMain\.handle\('get-tunnel-address', async \(\) => \{\s*return tunnelAddress;/);
 });
 
-test('preload exposes the tunnel-address event', () => {
+test('preload exposes the tunnel-address event and pull', () => {
   const code = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
   assert.match(code, /onTunnelAddress/);
   assert.match(code, /'tunnel-address'/);
+  assert.match(code, /getTunnelAddress: \(\) => ipcRenderer\.invoke\('get-tunnel-address'\)/);
 });
 
 test('the header shows the VPN address beside the public IP', () => {
   const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
   assert.match(code, /onTunnelAddress\(\(address\) => \{/);
   assert.match(code, /\{vpnAddress && \(/);
+  // Mount pulls the current address so a mid-session reload keeps the header
+  assert.match(code, /setVpnAddress\(await window\.electronAPI\.getTunnelAddress\(\)\)/);
   // The tooltip must explain why the public IP does not change on split tunnel
   assert.match(code, /split-tunnel VPNs your public IP stays the same/);
 });
