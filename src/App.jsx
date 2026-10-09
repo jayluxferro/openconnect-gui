@@ -7,6 +7,7 @@ import BasicLogs from './components/BasicLogs';
 import Navigation from './components/Navigation';
 import Alert from './components/Alert';
 import { Badge } from './components/ui/badge';
+import { Button } from './components/ui/button';
 
 function App() {
   const [profiles, setProfiles] = useState([]);
@@ -31,6 +32,38 @@ function App() {
   // a profile with no stored password). `at` re-triggers the effect when the
   // same profile is requested twice in a row.
   const [focusProfile, setFocusProfile] = useState({ name: null, at: 0 });
+  // Mirror of the updater's phase from main ('idle' | 'checking' |
+  // 'not-available' | 'downloading' | 'ready' | 'error' | 'unavailable'),
+  // plus a local flag so the footer reacts before the IPC round-trip ends.
+  const [updateState, setUpdateState] = useState({ phase: 'idle' });
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+
+  const checkForUpdates = async () => {
+    setCheckingUpdates(true);
+    try {
+      const state = await window.electronAPI.checkForUpdates();
+      setUpdateState(state);
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
+
+  // Footer text for the current updater phase; empty until there is
+  // something to say (no permanent "idle" clutter).
+  let updateStatusText = '';
+  if (checkingUpdates || updateState.phase === 'checking') {
+    updateStatusText = 'Checking for updates…';
+  } else if (updateState.phase === 'not-available') {
+    updateStatusText = `Up to date${updateState.version ? ` (v${updateState.version})` : ''}`;
+  } else if (updateState.phase === 'downloading') {
+    updateStatusText = `Downloading update${updateState.version ? ` v${updateState.version}` : ''}…${updateState.progress != null ? ` ${updateState.progress}%` : ''}`;
+  } else if (updateState.phase === 'ready') {
+    updateStatusText = `v${updateState.version || 'update'} ready — installs on quit`;
+  } else if (updateState.phase === 'error') {
+    updateStatusText = 'Update check failed — see Logs';
+  } else if (updateState.phase === 'unavailable') {
+    updateStatusText = 'Updates are checked in the installed app';
+  }
 
   useEffect(() => {
     // Initialize the app
@@ -70,6 +103,12 @@ function App() {
 
     window.electronAPI.onSelectProfile((profileName) => {
       setFocusProfile({ name: profileName, at: Date.now() });
+    });
+
+    // Updater phases pushed by main: keeps the footer honest even when the
+    // check was started from the tray or by the automatic startup check.
+    window.electronAPI.onUpdateState((state) => {
+      setUpdateState(state);
     });
   }, []);
 
@@ -238,7 +277,29 @@ function App() {
 
       {/* Footer */}
       <footer className="flex-shrink-0 px-6 py-2 border-t bg-muted/30">
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={checkForUpdates}
+              disabled={checkingUpdates || updateState.phase === 'downloading'}
+            >
+              Check for Updates
+            </Button>
+            {updateState.phase === 'ready' && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => window.electronAPI.installUpdate()}
+              >
+                Restart Now
+              </Button>
+            )}
+            <span className="text-xs text-muted-foreground">{updateStatusText}</span>
+          </div>
           <span className="text-xs text-muted-foreground">{appVersion ? `v${appVersion}` : ''}</span>
         </div>
       </footer>

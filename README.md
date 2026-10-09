@@ -45,7 +45,7 @@ Running OpenConnect processes, with a Kill button that asks for your sudo passwo
 
 `expect` ships with macOS. Your account needs to be an administrator, because OpenConnect runs under `sudo`.
 
-Once installed, the app updates itself: it checks this repository's releases in the background and applies the update after asking you (see [SECURITY.md](SECURITY.md) for how updates are verified).
+Once installed, the app updates itself: it checks this repository's releases in the background and applies the update after asking you. You can also check on demand — **Check for Updates** in the window's footer or **Check for Updates…** in the menu-bar menu — and watch the download progress as it streams in (see [SECURITY.md](SECURITY.md) for how updates are verified).
 
 ### First launch
 

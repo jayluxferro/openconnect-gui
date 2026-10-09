@@ -24,6 +24,12 @@ let userDisconnectRequested = false;
 // Sent once per session if profiles must stay plaintext because the OS
 // keychain is unavailable (#6).
 let plaintextPasswordWarningSent = false;
+// Mirror of the updater's phase for the window footer and the tray:
+// 'idle' | 'checking' | 'not-available' | 'downloading' | 'ready' | 'error'
+let updateState = { phase: 'idle' };
+// True while an update check (automatic or user-requested) is running, so a
+// second request returns the in-flight state instead of racing the first.
+let updateCheckInFlight = false;
 const PROFILES_FILE = path.join(app.getPath('userData'), 'profiles.json');
 let systemChecksComplete = false;
 
@@ -437,6 +443,7 @@ function updateTrayMenu() {
     'connect-profile': ({ profile }) => connectFromTray(profile),
     disconnect: () => disconnectVPN(),
     show: () => showMainWindow(),
+    'check-update': () => checkForUpdatesFromTray(),
     quit: () => quitFromTray()
   };
   // lib/tray-menu builds pure descriptors (action ids); attach the real
@@ -1499,7 +1506,29 @@ function setupAutoUpdate() {
     error: (message) => { console.error(`[update] ${message}`); sendLog(String(message), 'error'); },
   };
 
+  // Every phase transition is mirrored to the window footer (and remembered
+  // for the tray path) so a manual check can show live progress instead of
+  // a single answer. Without a window the states still converge on the
+  // restart dialog below.
+  autoUpdater.on('checking-for-update', () => {
+    sendUpdateState({ phase: 'checking' });
+  });
+  autoUpdater.on('update-available', (info) => {
+    // autoDownload is on, so availability immediately means downloading.
+    sendUpdateState({ phase: 'downloading', version: info.version, progress: null });
+  });
+  autoUpdater.on('update-not-available', () => {
+    sendUpdateState({ phase: 'not-available', version: app.getVersion() });
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    sendUpdateState({ phase: 'downloading', progress: Math.round(progress.percent) });
+  });
+  autoUpdater.on('error', (error) => {
+    sendUpdateState({ phase: 'error', message: error.message });
+  });
+
   autoUpdater.on('update-downloaded', (info) => {
+    sendUpdateState({ phase: 'ready', version: info.version });
     sendLog(`Update ${info.version} downloaded — install on restart`, 'info');
     dialog
       .showMessageBox({
@@ -1530,6 +1559,86 @@ function setupAutoUpdate() {
     });
   }, 10000);
 }
+
+// Publishes a new updater phase to the window footer and remembers it for
+// later readers (the tray path, or a window opened after the transition).
+function sendUpdateState(patch) {
+  updateState = { ...updateState, ...patch };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-state', updateState);
+  }
+}
+
+// Runs an update check on demand. Works in dev builds too — it answers
+// 'unavailable' instead of pretending to check, since dev builds have no
+// update feed (setupAutoUpdate skips them entirely).
+async function checkForUpdatesFromUI() {
+  if (!app.isPackaged) {
+    return { phase: 'unavailable', message: 'Updates are checked in the installed app, not dev builds.' };
+  }
+  if (updateCheckInFlight) {
+    return updateState;
+  }
+  updateCheckInFlight = true;
+  try {
+    // Progress and outcome arrive as events while this resolves; the state
+    // they produce outlives the await, so it is also a fine return value.
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    // Offline, rate-limited, or feed missing — the footer should say so,
+    // not stay stuck on "Checking…".
+    sendUpdateState({ phase: 'error', message: error.message });
+  } finally {
+    updateCheckInFlight = false;
+  }
+  return updateState;
+}
+
+// The tray variant answers terminal outcomes with a dialog: the user picked
+// the menu item, so silence reads as "the click did nothing". A download in
+// progress announces itself through the footer and, when it completes, the
+// restart dialog — no extra popup needed.
+async function checkForUpdatesFromTray() {
+  const result = await checkForUpdatesFromUI();
+  if (result.phase === 'not-available') {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'OpenConnect VPN',
+      message: 'You are up to date.',
+      detail: `Version ${result.version ?? app.getVersion()} is the latest release.`,
+      buttons: ['OK']
+    }).catch(() => {});
+  } else if (result.phase === 'unavailable') {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'OpenConnect VPN',
+      message: 'Updates are checked in the installed app, not dev builds.',
+      buttons: ['OK']
+    }).catch(() => {});
+  } else if (result.phase === 'error') {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'OpenConnect VPN',
+      message: 'Update check failed.',
+      detail: String(result.message ?? ''),
+      buttons: ['OK']
+    }).catch(() => {});
+  }
+}
+
+ipcMain.handle('check-for-updates', async () => checkForUpdatesFromUI());
+
+// Restart-and-install from the footer button. Guarded on the phase so a
+// stale renderer cannot trigger quitAndInstall before anything downloaded
+// (quitAndInstall would just quit the app in that case).
+ipcMain.handle('install-update', async () => {
+  if (updateState.phase === 'ready') {
+    app.isQuitting = true;
+    autoUpdater.quitAndInstall();
+    return { ok: true };
+  }
+  return { ok: false };
+});
 
 // App lifecycle
 app.whenReady().then(() => {

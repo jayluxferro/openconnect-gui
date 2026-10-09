@@ -37,6 +37,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // on a profile that has no stored password).
   onSelectProfile: (callback) => {
     ipcRenderer.on('select-profile', (event, profileName) => callback(profileName));
+  },
+
+  // Updates: manual check, restart-and-install, and the live phase feed
+  // the footer indicator subscribes to.
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateState: (callback) => {
+    ipcRenderer.on('update-state', (event, state) => callback(state));
   }
 });
 
