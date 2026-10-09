@@ -34,6 +34,8 @@ Running OpenConnect processes, with a Kill button that asks for your sudo passwo
      curl -fsSL https://raw.githubusercontent.com/jayluxferro/openconnect-gui/develop/install.sh | bash
      ```
 
+     If Homebrew is missing, a macOS password dialog appears once to authorize its installation — you never type a password into the terminal.
+
    The published build is for Apple Silicon; on an Intel Mac, build it yourself ([CONTRIBUTING.md](CONTRIBUTING.md#build-the-dmg)).
 2. Install OpenConnect if you installed by hand and do not have it:
 
