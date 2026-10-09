@@ -13,7 +13,7 @@
     "package": "npm run build && electron-builder",
     "test:expect": "bash test/vpn-connect.test.sh",
     "test:install": "bash test/install-script.test.sh",
-    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js test/main-connect-wiring.test.js test/tray-icon.test.js test/tray-menu.test.js test/profiles-storage.test.js test/ip-refresh.test.js test/auto-update.test.js",
+    "test:unit": "node --test test/redact.test.js test/line-logger.test.js test/openconnect-args.test.js test/main-connect-wiring.test.js test/tray-icon.test.js test/tray-menu.test.js test/tunnel-address.test.js test/profiles-storage.test.js test/ip-refresh.test.js test/auto-update.test.js",
     "test": "npm run test:unit && npm run test:expect && npm run test:install"
   },
   "keywords": [

@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installUpdate: () => ipcRenderer.invoke('install-update'),
   onUpdateState: (callback) => {
     ipcRenderer.on('update-state', (event, state) => callback(state));
+  },
+
+  // The tunnel's own address once openconnect reports it (null on
+  // disconnect). Split-tunnel VPNs never change the public IP, so this is
+  // the address that proves the tunnel is up.
+  onTunnelAddress: (callback) => {
+    ipcRenderer.on('tunnel-address', (event, address) => callback(address));
   }
 });
 

@@ -16,7 +16,7 @@ Running OpenConnect processes, with a Kill button that asks for your sudo passwo
 
 - Connects with a username and password over seven protocols: AnyConnect (Cisco), Juniper Network Connect, GlobalProtect (Palo Alto), Pulse Connect Secure, F5 Big-IP, Fortinet and Array Networks.
 - Saves connection profiles and fills the form from them.
-- Shows your public IP before and after connecting (looked up from ipify.org).
+- Shows your public IP before and after connecting (looked up from ipify.org), and once connected, the address the VPN assigned to this machine — labeled `VPN:` in the header.
 - Streams OpenConnect output to a Logs tab, with the last 10 entries on the Connection tab.
 - Flags network routes left over from a previous network, a common cause of failed connections after switching networks, and deletes them.
 - Lists OpenConnect processes, including ones started from a terminal or another tool, and kills them.
@@ -111,6 +111,10 @@ The Logs tab shows all OpenConnect output as it arrives. Lines from the connecti
 - `Network connection failed before authentication` or `Timeout waiting for ...`: the server did not answer. Check the URL and try Diagnostics.
 
 **"Failed to connect" or "Can't assign requested address".** Usually a stale route. Open Diagnostics and delete the routes marked in red. A typical one is a route to `172.20.10.1` left over from a phone hotspot.
+
+One variant of this error is harmless: during connect you may see `route: writing to routing socket: Can't assign requested address add net <tunnel's own IP>: gateway <same IP>`. That is the setup script trying to add a route for the tunnel's own address via itself — macOS declines, because the address already sits on the tunnel interface. Every route that matters installs right after it; if those lines are clean, the error can be ignored.
+
+**Connected, but the public IP did not change.** Not a fault: your VPN is split-tunnel — it routes only the corporate subnets through the tunnel and leaves internet traffic on your normal network, so your public IP is supposed to stay the same. The header shows the address the VPN assigned to this machine as `VPN:`; that is the tunnel's own address.
 
 **Connected but no internet.** The tunnel is up but route setup failed. Look for `vpnc-script` errors in the logs and check routes in Diagnostics. As a last resort you can add a default route by hand: `sudo route add -net 0.0.0.0/0 <gateway>`.
 
