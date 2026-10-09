@@ -27,6 +27,10 @@ function App() {
   const [problematicRoutesCount, setProblematicRoutesCount] = useState(0);
   const [runningProcessesCount, setRunningProcessesCount] = useState(0);
   const [passwordStorage, setPasswordStorage] = useState(null);
+  // The tray can ask the window to load a profile (a tray connect started on
+  // a profile with no stored password). `at` re-triggers the effect when the
+  // same profile is requested twice in a row.
+  const [focusProfile, setFocusProfile] = useState({ name: null, at: 0 });
 
   useEffect(() => {
     // Initialize the app
@@ -62,6 +66,10 @@ function App() {
     window.electronAPI.onConnectionError((error) => {
       showAlert(error, 'error');
       addLog(`Error: ${error}`, 'error');
+    });
+
+    window.electronAPI.onSelectProfile((profileName) => {
+      setFocusProfile({ name: profileName, at: Date.now() });
     });
   }, []);
 
@@ -190,6 +198,7 @@ function App() {
                 saveProfiles={saveProfiles}
                 loadProfiles={loadProfiles}
                 onServerChange={setCurrentServerUrl}
+                focusProfile={focusProfile}
               />
               <BasicLogs
                 logs={logs}

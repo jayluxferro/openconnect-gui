@@ -4,7 +4,8 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { redactLog } = require('./lib/redact');
-const { TRAY_ICON_BASE64 } = require('./lib/tray-icon');
+const { TRAY_ICON_IDLE, TRAY_ICON_CONNECTED } = require('./lib/tray-icon');
+const { buildTrayTemplate, statusLabel } = require('./lib/tray-menu');
 const { autoUpdater } = require('electron-updater');
 const { createLineLogger } = require('./lib/line-logger');
 
@@ -14,6 +15,9 @@ let installerWindow;
 let tray;
 let openconnectProcess = null;
 let connectionStatus = 'disconnected';
+// Name of the profile behind the current/last connection attempt, so the
+// tray can say "Connected to <name>" — display only, never a credential.
+let activeProfileName = null;
 // Set while the user (or app quit) is intentionally tearing the tunnel down,
 // so the child's 130/143 exit code is not surfaced as an error (#38).
 let userDisconnectRequested = false;
@@ -327,11 +331,80 @@ function getVpncScriptPath() {
 }
 
 // Create system tray
-function createTray() {
-  // A broken icon must not take the app down; the image is an embedded
-  // buffer, so there is no asset file to lose between clone and package
+function trayImage(spec) {
+  // Template image: monochrome + alpha, so macOS restyles it for light and
+  // dark menu bars. x1/x2 are the same padlock at 16 px and 32 px (@2x).
+  const image = nativeImage.createFromBuffer(Buffer.from(spec.x1, 'base64'));
+  image.addRepresentation({ scaleFactor: 2, buffer: Buffer.from(spec.x2, 'base64'), width: 32, height: 32 });
+  image.setTemplateImage(true);
+  return image;
+}
+
+function showMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+  }
+}
+
+function quitFromTray() {
+  if (connectionStatus === 'connected') {
+    const choice = dialog.showMessageBoxSync({
+      type: 'warning',
+      buttons: ['Quit', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      message: 'Quit and disconnect the VPN?',
+      detail: activeProfileName
+        ? `The connection to ${activeProfileName} will be closed.`
+        : 'The active VPN session will be closed.'
+    });
+    if (choice !== 0) {
+      return;
+    }
+  }
+  app.isQuitting = true;
+  app.quit();
+}
+
+// Tray-initiated connect: profiles are re-read from disk (the menu snapshot
+// can be stale), then go through the same connectVpn path the window uses.
+// A profile without a stored password cannot be launched headless — bring
+// the window up with that profile selected and let a human type it.
+async function connectFromTray(profileName) {
+  if (openconnectProcess) {
+    sendLog('[TRAY] Already connected or connecting', 'warn');
+    return;
+  }
+  let profiles;
   try {
-    tray = new Tray(nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_BASE64, 'base64')));
+    profiles = readProfiles();
+  } catch (error) {
+    sendLog(`[TRAY] Could not read saved profiles: ${error.message}`, 'error');
+    return;
+  }
+  const profile = profiles.find(p => p.name === profileName);
+  if (!profile) {
+    sendLog(`[TRAY] Profile "${profileName}" no longer exists`, 'warn');
+    updateTrayMenu();
+    return;
+  }
+  if (!profile.username || !profile.password) {
+    sendLog(`[TRAY] Profile "${profile.name}" has no stored password — finish connecting in the app window`, 'warn');
+    showMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('select-profile', profile.name);
+    }
+    return;
+  }
+  sendLog(`[TRAY] Connecting to ${profile.name}…`, 'info');
+  await connectVpn({ ...profile, profileName: profile.name });
+}
+
+function createTray() {
+  // A broken icon must not take the app down; the images are embedded
+  // buffers, so there is no asset file to lose between clone and package
+  try {
+    tray = new Tray(trayImage(TRAY_ICON_IDLE));
   } catch (error) {
     tray = null;
     sendLog(`[WARN] Tray icon unavailable: ${error.message}`, 'warn');
@@ -341,9 +414,7 @@ function createTray() {
   updateTrayMenu();
 
   tray.on('click', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-    }
+    showMainWindow();
   });
 }
 
@@ -353,49 +424,56 @@ function updateTrayMenu() {
     return;
   }
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: `Status: ${connectionStatus}`,
-      enabled: false
-    },
-    { type: 'separator' },
-    {
-      label: 'Show Window',
-      click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show();
-        }
-      }
-    },
-    {
-      label: connectionStatus === 'connected' ? 'Disconnect' : 'Connect',
-      enabled: false,
-      click: () => {
-        // Quick connect with last profile could be implemented here
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => {
-        app.isQuitting = true;
-        app.quit();
-      }
-    }
-  ]);
+  let profiles = [];
+  try {
+    profiles = readProfiles();
+  } catch {
+    // Unreadable profile file: the menu offers no profiles; the window
+    // still reports the real error when it loads them.
+  }
 
-  tray.setContextMenu(contextMenu);
-  tray.setToolTip(`OpenConnect VPN - ${connectionStatus}`);
+  const state = { status: connectionStatus, activeProfile: activeProfileName, profiles };
+  const handlers = {
+    'connect-profile': ({ profile }) => connectFromTray(profile),
+    disconnect: () => disconnectVPN(),
+    show: () => showMainWindow(),
+    quit: () => quitFromTray()
+  };
+  // lib/tray-menu builds pure descriptors (action ids); attach the real
+  // handlers here and drop the descriptor keys Electron does not know.
+  const wire = (items) => items.map(({ action, profile, ...item }) => {
+    if (item.submenu) {
+      item.submenu = wire(item.submenu);
+    }
+    if (action) {
+      const run = handlers[action];
+      item.click = () => run({ action, profile });
+    }
+    return item;
+  });
+
+  tray.setContextMenu(Menu.buildFromTemplate(wire(buildTrayTemplate(state))));
+  tray.setToolTip(`OpenConnect VPN — ${statusLabel(state)}`);
+  try {
+    tray.setImage(trayImage(connectionStatus === 'connected' ? TRAY_ICON_CONNECTED : TRAY_ICON_IDLE));
+  } catch (error) {
+    sendLog(`[WARN] Tray icon update failed: ${error.message}`, 'warn');
+  }
 }
 
 // Handle VPN connection
-ipcMain.handle('connect-vpn', async (event, config) => {
+ipcMain.handle('connect-vpn', async (event, config) => connectVpn(config));
+
+// Shared by the window's Connect button and the tray menu. config carries
+// server/username/password (+ optional authgroup/protocol/serverCert) and a
+// profileName that is display-only ("Connected to <name>" in the tray).
+async function connectVpn(config) {
   if (openconnectProcess) {
     return { success: false, error: 'Already connected or connecting' };
   }
 
-
   try {
+    activeProfileName = config.profileName || null;
     updateStatus('connecting');
     userDisconnectRequested = false;
 
@@ -659,7 +737,7 @@ ipcMain.handle('connect-vpn', async (event, config) => {
     updateStatus('disconnected');
     return { success: false, error: error.message };
   }
-});
+}
 
 // Handle VPN disconnection
 ipcMain.handle('disconnect-vpn', async () => {
@@ -774,27 +852,32 @@ ipcMain.handle('save-profiles', async (event, profiles) => {
 });
 
 // Load profiles
+// Reads (and decrypts) the saved profiles. Also used by the tray menu,
+// which needs the profile list outside any renderer call. Throws on a
+// corrupt file; callers decide how to report that.
+function readProfiles() {
+  if (!fs.existsSync(PROFILES_FILE)) {
+    return [];
+  }
+  const data = fs.readFileSync(PROFILES_FILE, 'utf8');
+  const profiles = JSON.parse(data).map(decryptLoadedProfile);
+
+  // One-time migration: a file written before #6 still holds plaintext
+  // passwords. Rewrite it through the encryption path immediately.
+  if (profiles.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
+    try {
+      writeProfilesFile(profiles.map(encryptProfileForStorage));
+      sendLog('Migrated stored profiles to encrypted passwords', 'info');
+    } catch (error) {
+      sendLog(`[WARNING] Could not migrate profiles to encrypted storage: ${error.message}`, 'error');
+    }
+  }
+  return profiles;
+}
+
 ipcMain.handle('load-profiles', async () => {
   try {
-    if (fs.existsSync(PROFILES_FILE)) {
-      const data = fs.readFileSync(PROFILES_FILE, 'utf8');
-      const profiles = JSON.parse(data).map(decryptLoadedProfile);
-
-      // One-time migration: a file written before #6 still holds plaintext
-      // passwords. Rewrite it through the encryption path immediately.
-      if (profiles.some(profile => profile.password) && safeStorage.isEncryptionAvailable()) {
-        try {
-          const storedProfiles = profiles.map(encryptProfileForStorage);
-          writeProfilesFile(storedProfiles);
-          sendLog('Migrated stored profiles to encrypted passwords', 'info');
-        } catch (error) {
-          sendLog(`[WARNING] Could not migrate profiles to encrypted storage: ${error.message}`, 'error');
-        }
-      }
-
-      return { success: true, profiles, passwordStorage: passwordStorageMode() };
-    }
-    return { success: true, profiles: [], passwordStorage: passwordStorageMode() };
+    return { success: true, profiles: readProfiles(), passwordStorage: passwordStorageMode() };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1292,6 +1375,9 @@ ipcMain.on('open-installer', () => {
 // Helper functions
 function updateStatus(status) {
   connectionStatus = status;
+  if (status === 'disconnected') {
+    activeProfileName = null;
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('status-changed', status);
   }
